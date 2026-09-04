@@ -79,21 +79,23 @@ def check(config_path: str):
     click.echo("AlterraEnv passed gymnasium's check_env().")
 
 
+def _build_manual_emitters(config, scenario_path: str | None):
+    if not scenario_path:
+        return None
+    rng_manager = RNGManager(config.rng_seed)
+    specs = load_manual_scenario(scenario_path)
+    return build_manual_population(specs, config, rng_manager)
+
+
 @env.command()
 @click.option("--config", "config_path", default="configs/default_config.yaml", show_default=True)
 @click.option("--scenario", "scenario_path", default=None)
 @click.option("--steps", type=int, default=50, show_default=True)
 def preview(config_path: str, scenario_path: str | None, steps: int):
     config = load_config(config_path)
-    manual_emitters = None
-    if scenario_path:
-        rng_manager = RNGManager(config.rng_seed)
-        specs = load_manual_scenario(scenario_path)
-        manual_emitters = build_manual_population(specs, config, rng_manager)
-
+    manual_emitters = _build_manual_emitters(config, scenario_path)
     e = AlterraEnv(config, manual_emitters=manual_emitters)
     obs, info = e.reset(seed=config.rng_seed)
-    rng = np.random.default_rng(0)
     total_reward = 0.0
     hits = 0
     false_alarms = 0
@@ -117,36 +119,41 @@ def preview(config_path: str, scenario_path: str | None, steps: int):
 @env.command()
 @click.option("--config", "config_path", default="configs/default_config.yaml", show_default=True)
 @click.option("--scenario", "scenario_path", default=None)
-@click.option("--steps", type=int, default=200, show_default=True)
-def metrics(config_path: str, scenario_path: str | None, steps: int):
+@click.option("--episodes", type=int, default=5, show_default=True)
+@click.option("--steps-per-episode", type=int, default=200, show_default=True)
+def metrics(config_path: str, scenario_path: str | None, episodes: int, steps_per_episode: int):
     config = load_config(config_path)
-    manual_emitters = None
-    if scenario_path:
-        rng_manager = RNGManager(config.rng_seed)
-        specs = load_manual_scenario(scenario_path)
-        manual_emitters = build_manual_population(specs, config, rng_manager)
-
+    manual_emitters = _build_manual_emitters(config, scenario_path)
     e = AlterraEnv(config, manual_emitters=manual_emitters)
-    obs, info = e.reset(seed=config.rng_seed)
-    tracker = MetricsTracker()
 
-    for _ in range(steps):
-        action = e.action_space.sample()
-        obs, reward, terminated, truncated, info = e.step(action)
-        tracker.record_step(e.last_dwell_result, reward)
-        if terminated or truncated:
-            break
+    per_episode = []
+    for ep in range(episodes):
+        obs, info = e.reset(seed=config.rng_seed + ep)
+        tracker = MetricsTracker()
+        for _ in range(steps_per_episode):
+            action = e.action_space.sample()
+            obs, reward, terminated, truncated, info = e.step(action)
+            tracker.record_step(e.last_dwell_result, reward)
+            if terminated or truncated:
+                break
+        per_episode.append(tracker.finalize(e))
 
-    m = tracker.finalize(e)
-    click.echo(f"Pd:                  {m.probability_of_detection:.3f}")
-    click.echo(f"Pfa:                 {m.probability_of_false_alarm:.3f}")
-    click.echo(f"Sensitivity:         {m.sensitivity:.3f}")
-    click.echo(f"Avg intercept rate:  {m.avg_intercept_rate:.3f}")
-    click.echo(f"Avg reward:          {m.avg_reward:.3f}")
-    click.echo(f"Percent correct:     {m.percent_correct:.3f}")
-    err = m.avg_intercept_time_error_slots
-    click.echo(f"Avg intercept time error (slots): {err:.2f}" if err is not None else "Avg intercept time error (slots): n/a")
-    click.echo(f"Steps: {m.steps}")
+    def avg(attr: str):
+        vals = [getattr(m, attr) for m in per_episode if getattr(m, attr) is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    click.echo(f"Averaged over {episodes} episodes ({steps_per_episode} steps each):")
+    for label, attr, fmt in [
+        ("Pd", "probability_of_detection", ".3f"),
+        ("Pfa", "probability_of_false_alarm", ".3f"),
+        ("Sensitivity", "sensitivity", ".3f"),
+        ("Avg intercept rate", "avg_intercept_rate", ".3f"),
+        ("Avg reward", "avg_reward", ".3f"),
+        ("Percent correct", "percent_correct", ".3f"),
+        ("Avg intercept time error (slots)", "avg_intercept_time_error_slots", ".2f"),
+    ]:
+        v = avg(attr)
+        click.echo(f"{label + ':':<36} {v:{fmt}}" if v is not None else f"{label + ':':<36} n/a")
 
 
 @env.command()
@@ -156,12 +163,7 @@ def metrics(config_path: str, scenario_path: str | None, steps: int):
 @click.option("--out", "out_path", default="episode_waterfall.png", show_default=True)
 def plot(config_path: str, scenario_path: str | None, steps: int, out_path: str):
     config = load_config(config_path)
-    manual_emitters = None
-    if scenario_path:
-        rng_manager = RNGManager(config.rng_seed)
-        specs = load_manual_scenario(scenario_path)
-        manual_emitters = build_manual_population(specs, config, rng_manager)
-
+    manual_emitters = _build_manual_emitters(config, scenario_path)
     e = AlterraEnv(config, manual_emitters=manual_emitters)
     obs, info = e.reset(seed=config.rng_seed)
 
@@ -180,10 +182,6 @@ def plot(config_path: str, scenario_path: str | None, steps: int, out_path: str)
     click.echo(f"Saved {out_path}")
 
 
-if __name__ == "__main__":
-    cli()
-
-
 @cli.group()
 def pdw():
     """Ground-truth PDW export (stand-in for MS-UNet1D detection output)."""
@@ -200,13 +198,8 @@ def export(config_path: str, scenario_path: str | None, episode_length: int | No
 
     config = load_config(config_path)
     ep_len = episode_length or config.timing.episode_length_slots
-    rng_manager = RNGManager(config.rng_seed)
-
-    if scenario_path:
-        specs = load_manual_scenario(scenario_path)
-        population = build_manual_population(specs, config, rng_manager)
-    else:
-        population = build_population(config, rng_manager)
+    manual_emitters = _build_manual_emitters(config, scenario_path)
+    population = manual_emitters if manual_emitters is not None else build_population(config, RNGManager(config.rng_seed))
 
     for e in population:
         e.reset(ep_len)
@@ -230,13 +223,8 @@ def preview(config_path: str, scenario_path: str | None, episode_length: int | N
 
     config = load_config(config_path)
     ep_len = episode_length or config.timing.episode_length_slots
-    rng_manager = RNGManager(config.rng_seed)
-
-    if scenario_path:
-        specs = load_manual_scenario(scenario_path)
-        population = build_manual_population(specs, config, rng_manager)
-    else:
-        population = build_population(config, rng_manager)
+    manual_emitters = _build_manual_emitters(config, scenario_path)
+    population = manual_emitters if manual_emitters is not None else build_population(config, RNGManager(config.rng_seed))
 
     for e in population:
         e.reset(ep_len)
@@ -249,3 +237,7 @@ def preview(config_path: str, scenario_path: str | None, episode_length: int | N
             f"cf={p.cf_hz/1e6:.1f}MHz  doa={p.doa_deg:.1f}deg  amp={p.amplitude_dbm:.2f}dBm  "
             f"emitter={p.emitter_id}"
         )
+
+
+if __name__ == "__main__":
+    cli()

@@ -227,8 +227,15 @@ def load_config(path: str | Path) -> AlterraConfig:
 
     return AlterraConfig(
         rng_seed=int(raw["rng_seed"]),
-        spectrum=SpectrumConfig(**raw["spectrum"]),
-        timing=TimingConfig(**raw["timing"]),
+        spectrum=SpectrumConfig(
+            num_bands=int(raw["spectrum"]["num_bands"]),
+            band_bandwidth_hz=float(raw["spectrum"]["band_bandwidth_hz"]),
+            band_start_freq_hz=float(raw["spectrum"]["band_start_freq_hz"]),
+        ),
+        timing=TimingConfig(
+            slot_duration_s=float(raw["timing"]["slot_duration_s"]),
+            episode_length_slots=int(raw["timing"]["episode_length_slots"]),
+        ),
         emitters=EmittersConfig(
             population=population, fixed=fixed, agile=agile, periodic_scan=periodic_scan
         ),
