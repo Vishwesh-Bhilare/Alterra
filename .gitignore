@@ -1,0 +1,279 @@
+# Python
+
+**pycache**/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging
+
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+*.manifest
+*.spec
+
+# Virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Testing / coverage
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.pytype/
+hypothesis/
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# Type checkers
+
+.dmypy.json
+dmypy.json
+
+# Profiling
+
+.prof
+*.prof
+.profraw
+
+# Logs
+
+*.log
+logs/
+log/
+
+# Temporary files
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+*~
+*.orig
+*.rej
+
+# Environment / local configuration
+
+*.local
+local/
+.local/
+
+# Simulation outputs
+
+simulation/output/
+simulation/outputs/
+simulation/data/
+simulation/generated/
+simulation/results/
+outputs/
+output/
+data/
+generated/
+results/
+
+# Large generated files
+
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.hdf5
+*.parquet
+*.feather
+
+# Model artifacts / checkpoints
+
+checkpoints/
+models/
+weights/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.onnx.data
+*.safetensors
+*.bin
+
+# TensorBoard
+
+runs/
+wandb/
+tensorboard/
+mlruns/
+
+# Experiment tracking
+
+*.db
+*.sqlite
+*.sqlite3
+
+# Profiling / performance
+
+*.prof
+*.trace
+
+# IDEs
+
+.vscode/
+.idea/
+*.iml
+
+# VS Code
+
+.history/
+
+# PyCharm
+
+.python-version
+
+# Spyder
+
+.spyderproject
+.spyproject
+
+# Sublime Text
+
+*.sublime-workspace
+*.sublime-project
+
+# Vim / Neovim
+
+Session.vim
+.netrwhist
+
+# Emacs
+
+.#*
+*#
+
+# macOS
+
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+
+*~
+.directory
+
+# Shell / tooling
+
+.direnv/
+.devenv/
+.terraform/
+.pytest_cache/
+
+# Secrets
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.secret
+secrets/
+credentials/
+credentials.json
+secrets.json
+
+# Local config overrides
+
+configs/*.local.yaml
+configs/*.local.yml
+configs/local/
+*.override.yaml
+*.override.yml
+
+# Documentation build
+
+docs/_build/
+site/
+
+# Generated API / reports
+
+reports/
+artifacts/
+
+# Node / frontend artifacts, if web interface is added
+
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+dist/
+
+# Frontend build outputs
+
+.next/
+.nuxt/
+.svelte-kit/
+.vercel/
+.netlify/
+
+# Docker
+
+.docker/
+docker-data/
+
+# Local databases / caches
+
+*.sqlite
+*.sqlite3
+*.db
+
+# OS / editor leftovers
+
+*.pid
+*.pid.lock
+
+# Project-specific generated files
+
+*.generated
+*.generated.*
+*_generated.*
+
+```
+```
+
