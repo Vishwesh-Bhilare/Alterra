@@ -1,8 +1,3 @@
-"""
-Loads configs/*.yaml into typed dataclasses. Every distribution/range an
-emitter, sensor, or environment component needs at runtime comes from here —
-nothing in simulation/ code should hardcode a numeric default.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -118,8 +113,21 @@ class RewardConfig:
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
-    dwell_slots_per_action: int
+    dwell_options_slots: list[int]
     reward: RewardConfig
+
+
+@dataclass(frozen=True)
+class ScenarioConfig:
+    manual_scenario_path: Optional[str]
+
+
+@dataclass(frozen=True)
+class PulseConfig:
+    pri_s_range: FloatRange
+    pw_s_range: FloatRange
+    pri_jitter_std_s: float
+    doa_deg_range: FloatRange
 
 
 @dataclass(frozen=True)
@@ -130,6 +138,8 @@ class AlterraConfig:
     emitters: EmittersConfig
     sensor: SensorConfig
     environment: EnvironmentConfig
+    scenario: ScenarioConfig
+    pulse: PulseConfig
 
 
 def _int_range(d: Optional[dict]) -> Optional[IntRange]:
@@ -200,8 +210,19 @@ def load_config(path: str | Path) -> AlterraConfig:
         staleness_norm_slots=int(reward_raw["staleness_norm_slots"]),
     )
     environment = EnvironmentConfig(
-        dwell_slots_per_action=int(env_raw["dwell_slots_per_action"]),
+        dwell_options_slots=[int(v) for v in env_raw["dwell_options_slots"]],
         reward=reward,
+    )
+
+    scenario_raw = raw.get("scenario", {})
+    scenario = ScenarioConfig(manual_scenario_path=scenario_raw.get("manual_scenario_path"))
+
+    pulse_raw = raw["pulse"]
+    pulse = PulseConfig(
+        pri_s_range=_float_range(pulse_raw["pri_s_range"]),
+        pw_s_range=_float_range(pulse_raw["pw_s_range"]),
+        pri_jitter_std_s=float(pulse_raw["pri_jitter_std_s"]),
+        doa_deg_range=_float_range(pulse_raw["doa_deg_range"]),
     )
 
     return AlterraConfig(
@@ -213,4 +234,6 @@ def load_config(path: str | Path) -> AlterraConfig:
         ),
         sensor=sensor,
         environment=environment,
+        scenario=scenario,
+        pulse=pulse,
     )

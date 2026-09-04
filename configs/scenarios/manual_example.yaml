@@ -1,0 +1,30 @@
+emitters:
+  - kind: fixed
+    id: manual_fixed_alpha
+    threat_level: 3
+    band: 10
+    duty_cycle: 0.5
+    mean_burst_slots: 20
+    power_dbm: 5.0
+    power_jitter_std_db: 1.0
+
+  - kind: agile
+    id: manual_agile_bravo
+    threat_level: 2
+    hop_bands: [4, 15, 22, 30]
+    hop_dwell_slots: 6
+    burst_duty_cycle: 0.6
+    burst_mean_slots: 4
+    power_dbm: 8.0
+    power_jitter_std_db: 1.5
+
+  - kind: periodic_scan
+    id: manual_scan_charlie
+    threat_level: 1
+    sweep_start_band: 40
+    sweep_width: 12
+    dwell_slots: 8
+    duty_cycle: 0.8
+    burst_mean_slots: 6
+    power_dbm: 3.0
+    power_jitter_std_db: 1.0

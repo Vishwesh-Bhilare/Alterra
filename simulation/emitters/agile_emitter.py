@@ -7,17 +7,15 @@ from .schedule_utils import power_schedule_from_mask, two_state_markov_mask
 
 
 class AgileEmitter(BaseEmitter):
-    """
-    Frequency-hopping emitter: jumps between a per-instance random subset of
-    bands every hop_dwell_slots, bursting on/off within each hop per a
-    duty-cycle Markov chain.
-    """
-
     def __init__(
         self,
         emitter_id: str,
         threat_level: int,
         rng: np.random.Generator,
+        pri_s: float,
+        pw_s: float,
+        pri_jitter_std_s: float,
+        doa_deg: float,
         num_bands: int,
         hop_bandset_size: int,
         hop_dwell_slots: int,
@@ -26,7 +24,7 @@ class AgileEmitter(BaseEmitter):
         power_mean_dbm: float,
         power_jitter_std_db: float,
     ):
-        super().__init__(emitter_id, threat_level, rng)
+        super().__init__(emitter_id, threat_level, rng, pri_s, pw_s, pri_jitter_std_s, doa_deg)
         self.num_bands = num_bands
         self.hop_bandset_size = min(hop_bandset_size, num_bands)
         self.hop_dwell_slots = hop_dwell_slots

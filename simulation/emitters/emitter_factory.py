@@ -1,9 +1,3 @@
-"""
-Builds a randomized emitter population from an AlterraConfig. This is the
-only place that samples "which parameters does emitter #i get" — the
-emitter classes themselves take concrete values and only use their own RNG
-stream for schedule generation.
-"""
 from __future__ import annotations
 
 from simulation.utils.config_loader import AlterraConfig
@@ -24,6 +18,7 @@ def _normalized_weights(class_weights: dict[str, float]) -> tuple[list[str], lis
 
 def build_population(config: AlterraConfig, rng_manager: RNGManager) -> list[BaseEmitter]:
     pop_cfg = config.emitters.population
+    pulse_cfg = config.pulse
     selection_rng = rng_manager.spawn_named("emitter_population_selection")
 
     count = pop_cfg.total_count_range.sample(selection_rng)
@@ -35,6 +30,11 @@ def build_population(config: AlterraConfig, rng_manager: RNGManager) -> list[Bas
         emitter_id = f"{kind}_{i:03d}"
         emitter_rng = rng_manager.spawn_named(emitter_id)
         threat_level = pop_cfg.threat_level.sample(selection_rng)
+
+        pri_s = pulse_cfg.pri_s_range.sample(selection_rng)
+        pw_s = pulse_cfg.pw_s_range.sample(selection_rng)
+        doa_deg = pulse_cfg.doa_deg_range.sample(selection_rng)
+        pri_jitter_std_s = pulse_cfg.pri_jitter_std_s
 
         if kind == "fixed":
             cfg = config.emitters.fixed
@@ -48,6 +48,10 @@ def build_population(config: AlterraConfig, rng_manager: RNGManager) -> list[Bas
                     emitter_id=emitter_id,
                     threat_level=threat_level,
                     rng=emitter_rng,
+                    pri_s=pri_s,
+                    pw_s=pw_s,
+                    pri_jitter_std_s=pri_jitter_std_s,
+                    doa_deg=doa_deg,
                     band=band,
                     duty_cycle=cfg.duty_cycle_range.sample(selection_rng),
                     mean_burst_slots=cfg.mean_burst_slots_range.sample(selection_rng),
@@ -63,6 +67,10 @@ def build_population(config: AlterraConfig, rng_manager: RNGManager) -> list[Bas
                     emitter_id=emitter_id,
                     threat_level=threat_level,
                     rng=emitter_rng,
+                    pri_s=pri_s,
+                    pw_s=pw_s,
+                    pri_jitter_std_s=pri_jitter_std_s,
+                    doa_deg=doa_deg,
                     num_bands=config.spectrum.num_bands,
                     hop_bandset_size=cfg.num_hop_bands_range.sample(selection_rng),
                     hop_dwell_slots=cfg.hop_dwell_slots_range.sample(selection_rng),
@@ -80,6 +88,10 @@ def build_population(config: AlterraConfig, rng_manager: RNGManager) -> list[Bas
                     emitter_id=emitter_id,
                     threat_level=threat_level,
                     rng=emitter_rng,
+                    pri_s=pri_s,
+                    pw_s=pw_s,
+                    pri_jitter_std_s=pri_jitter_std_s,
+                    doa_deg=doa_deg,
                     num_bands=config.spectrum.num_bands,
                     sweep_width=cfg.sweep_width_bands_range.sample(selection_rng),
                     dwell_slots=cfg.dwell_slots_range.sample(selection_rng),

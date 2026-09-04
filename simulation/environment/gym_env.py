@@ -1,15 +1,14 @@
 """
-Gymnasium environment wrapping the simulation. This is Alterra's sole
-contract surface with model/agents — CAROTA, Double DQN, and PPO all train
-against AlterraEnv and nothing else in simulation/.
+Gymnasium environment wrapping the simulation. Sole contract surface with
+model/agents. Action is (band, dwell_option_index) — MultiDiscrete — so the
+scheduler picks both frequency and dwell time per the CORTEX pipeline spec.
 
-KNOWN SIMPLIFICATION (documented, not accidental): observation "tracks" are
-indexed by band, not by deinterleaved emitter identity, because
-model/deinterleaving doesn't exist yet. This environment currently tracks
-"is there something worth revisiting in band b", not a true per-emitter
-track. Swap this for genuine per-emitter tracks once SEDCAM deinterleaving
-output is available — the observation/reward *shape* below is written so
-that swap shouldn't require changes in model/agents.
+Supports both default mode (random population via build_population) and
+manual scenario mode (explicit emitters via scenario_builder), selected by
+passing `manual_emitters` to reset() or the constructor.
+
+KNOWN SIMPLIFICATION: observation "tracks" are indexed by band, not by
+deinterleaved emitter identity — swap once model/deinterleaving exists.
 """
 from __future__ import annotations
 
@@ -26,8 +25,8 @@ from simulation.environment.spectrum_world import SpectrumWorld
 from simulation.utils.config_loader import AlterraConfig
 from simulation.utils.rng import RNGManager
 
-TRACK_FEATURE_DIM = 4  # [threat_level_norm, confidence, time_since_last_norm, ever_observed]
-RECEIVER_FEATURE_DIM = 2  # [last_band_norm, episode_progress_norm]
+TRACK_FEATURE_DIM = 4
+RECEIVER_FEATURE_DIM = 2
 
 
 @dataclass
@@ -41,15 +40,17 @@ class _BandTrack:
 class AlterraEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, config: AlterraConfig):
+    def __init__(self, config: AlterraConfig, manual_emitters: list[BaseEmitter] | None = None):
         super().__init__()
         self.config = config
+        self._static_manual_emitters = manual_emitters
 
         self._master_rng = RNGManager(config.rng_seed)
         self._episode_idx = -1
 
         num_bands = config.spectrum.num_bands
-        self.action_space = spaces.Discrete(num_bands)
+        self._dwell_options = config.environment.dwell_options_slots
+        self.action_space = spaces.MultiDiscrete([num_bands, len(self._dwell_options)])
         self.observation_space = spaces.Dict(
             {
                 "band_tracks": spaces.Box(
@@ -62,7 +63,6 @@ class AlterraEnv(gym.Env):
         )
 
         self._episode_length = config.timing.episode_length_slots
-        self._dwell_slots = config.environment.dwell_slots_per_action
 
         threat_levels = config.environment.reward.threat_weight_levels
         threat_values = config.environment.reward.threat_weight_values
@@ -76,20 +76,22 @@ class AlterraEnv(gym.Env):
         self._tracks: dict[int, _BandTrack] = {}
         self._t = 0
         self._last_band = 0
+        self.last_dwell_result: DwellResult | None = None
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
         self._episode_idx += 1
 
-        # Each episode gets its own deterministic-but-distinct RNGManager,
-        # derived from the master seed via a named spawn keyed on episode
-        # index — same master seed always reproduces the same sequence of
-        # episode scenarios.
         episode_seed_rng = self._master_rng.spawn_named(f"episode_{self._episode_idx}")
         episode_seed = int(episode_seed_rng.integers(0, 2**31 - 1))
         episode_rng_manager = RNGManager(episode_seed)
 
-        self._emitters = build_population(self.config, episode_rng_manager)
+        manual_emitters = (options or {}).get("manual_emitters") or self._static_manual_emitters
+        if manual_emitters is not None:
+            self._emitters = manual_emitters
+        else:
+            self._emitters = build_population(self.config, episode_rng_manager)
+
         for emitter in self._emitters:
             emitter.reset(self._episode_length)
 
@@ -108,14 +110,17 @@ class AlterraEnv(gym.Env):
         self._tracks = {}
         self._t = 0
         self._last_band = 0
+        self.last_dwell_result = None
 
         return self._build_observation(), {}
 
-    def step(self, action: int):
+    def step(self, action):
         assert self._receiver is not None, "call reset() before step()"
-        band = int(action)
+        band = int(action[0])
+        dwell_slots = self._dwell_options[int(action[1])]
 
-        dwell_result = self._receiver.dwell(band, self._t, self._dwell_slots)
+        dwell_result = self._receiver.dwell(band, self._t, dwell_slots)
+        self.last_dwell_result = dwell_result
         self._t = dwell_result.end_t
         self._last_band = band
 
@@ -129,6 +134,7 @@ class AlterraEnv(gym.Env):
             "any_hit": dwell_result.any_hit,
             "any_false_alarm": dwell_result.any_false_alarm,
             "band": band,
+            "dwell_slots": dwell_slots,
         }
         return observation, reward, terminated, truncated, info
 
@@ -189,5 +195,4 @@ class AlterraEnv(gym.Env):
             ],
             dtype=np.float32,
         )
-
         return {"band_tracks": band_tracks, "receiver": receiver_features}

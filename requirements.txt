@@ -5,3 +5,4 @@ gymnasium>=0.29
 # added in later batches:
 # stable-baselines3>=2.3
 # torch  or  tensorflow
+matplotlib>=3.8

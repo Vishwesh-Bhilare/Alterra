@@ -7,19 +7,15 @@ from .schedule_utils import power_schedule_from_mask, two_state_markov_mask
 
 
 class PeriodicScanEmitter(BaseEmitter):
-    """
-    A scanning emitter (e.g. a mechanically/electronically scanning radar):
-    sweeps a contiguous window of `sweep_width` bands, dwelling
-    `dwell_slots` on each before advancing, cycling indefinitely. This is
-    the archetype the problem statement calls out for optimal interception
-    of a periodic scan receiver.
-    """
-
     def __init__(
         self,
         emitter_id: str,
         threat_level: int,
         rng: np.random.Generator,
+        pri_s: float,
+        pw_s: float,
+        pri_jitter_std_s: float,
+        doa_deg: float,
         num_bands: int,
         sweep_width: int,
         dwell_slots: int,
@@ -28,7 +24,7 @@ class PeriodicScanEmitter(BaseEmitter):
         power_mean_dbm: float,
         power_jitter_std_db: float,
     ):
-        super().__init__(emitter_id, threat_level, rng)
+        super().__init__(emitter_id, threat_level, rng, pri_s, pw_s, pri_jitter_std_s, doa_deg)
         self.num_bands = num_bands
         self.sweep_width = min(sweep_width, num_bands)
         self.dwell_slots = dwell_slots

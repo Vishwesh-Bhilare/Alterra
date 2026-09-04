@@ -61,7 +61,7 @@ sensor:
 
 # Environment and RL reward structure
 environment:
-  dwell_slots_per_action: 5    # Receiver dwells N slots per RL action
+  dwell_options_slots: [3, 5, 8, 12]
   reward:
     hit_reward_base: 10.0
     threat_weight_levels: [1, 2, 3]
@@ -70,3 +70,12 @@ environment:
     false_alarm_penalty: -2.0
     staleness_penalty_coeff: 0.05           # How much to penalize old observations
     staleness_norm_slots: 200               # Normalization horizon for staleness
+
+scenario:
+  manual_scenario_path: null   # set via --scenario CLI flag; null = default random population
+
+pulse:
+  pri_s_range: {min: 0.0005, max: 0.01}
+  pw_s_range: {min: 0.00001, max: 0.0005}
+  pri_jitter_std_s: 0.00002
+  doa_deg_range: {min: 0.0, max: 360.0}
