@@ -1,0 +1,7 @@
+numpy>=1.26
+pyyaml>=6.0
+click>=8.1
+gymnasium>=0.29
+# added in later batches:
+# stable-baselines3>=2.3
+# torch  or  tensorflow

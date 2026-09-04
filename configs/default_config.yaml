@@ -1,0 +1,72 @@
+# Alterra Configuration
+# Electronic Warfare receiver scheduling simulation
+
+rng_seed: 42
+
+# Spectrum definition
+spectrum:
+  num_bands: 128                    # 128 bands covering ~1-10 GHz range
+  band_bandwidth_hz: 70e6           # 70 MHz per band
+  band_start_freq_hz: 1.0e9         # Start at 1 GHz
+
+# Timing model
+timing:
+  slot_duration_s: 0.01             # 10 ms per slot
+  episode_length_slots: 2000        # 20 seconds per episode
+
+# Emitter population and class distributions
+emitters:
+  population:
+    total_count_range: {min: 8, max: 15}   # 8-15 emitters per episode
+    class_weights:
+      fixed: 0.5                    # 50% fixed-frequency emitters
+      agile: 0.35                   # 35% frequency-hopping
+      periodic_scan: 0.15           # 15% periodic-scan emitters
+    threat_level:
+      levels: [1, 2, 3]             # Low, Medium, High priority
+      weights: [0.4, 0.4, 0.2]      # 40% low, 40% med, 20% high
+
+  # Fixed-frequency emitter parameters
+  fixed:
+    band_index_range: {min: 0, max: 127}   # Can be on any band
+    duty_cycle_range: {min: 0.1, max: 0.7}
+    mean_burst_slots_range: {min: 50, max: 200}
+    power_dbm_range: {min: 0, max: 30}
+    power_jitter_std_db: 2.0
+
+  # Frequency-hopping (agile) emitter parameters
+  agile:
+    hop_dwell_slots_range: {min: 20, max: 100}   # Time on each frequency
+    num_hop_bands_range: {min: 3, max: 10}       # Number of bands to hop among
+    burst_duty_cycle_range: {min: 0.2, max: 0.8}
+    burst_mean_slots_range: {min: 40, max: 150}
+    power_dbm_range: {min: 5, max: 35}
+    power_jitter_std_db: 3.0
+
+  # Periodic-scan emitter parameters
+  periodic_scan:
+    dwell_slots_range: {min: 30, max: 80}        # Time per band in sweep
+    sweep_width_bands_range: {min: 4, max: 16}   # Number of bands to sweep
+    duty_cycle_range: {min: 0.3, max: 0.9}
+    burst_mean_slots_range: {min: 60, max: 180}
+    power_dbm_range: {min: 10, max: 40}
+    power_jitter_std_db: 2.5
+
+# Sensor (receiver) model
+sensor:
+  noise_floor_dbm_range: {min: -95.0, max: -85.0}
+  pd_snr50_db: 8.0        # SNR (dB) at which Pd = 0.5
+  pd_slope_db: 3.0        # Logistic slope of Pd(SNR) curve
+  pfa_rate: 0.02          # Per-band per-slot false alarm probability
+
+# Environment and RL reward structure
+environment:
+  dwell_slots_per_action: 5    # Receiver dwells N slots per RL action
+  reward:
+    hit_reward_base: 10.0
+    threat_weight_levels: [1, 2, 3]
+    threat_weight_values: [1.0, 2.0, 4.0]   # Threat level multipliers
+    idle_cost: -0.1                         # Penalty for dwelling with no signal
+    false_alarm_penalty: -2.0
+    staleness_penalty_coeff: 0.05           # How much to penalize old observations
+    staleness_norm_slots: 200               # Normalization horizon for staleness
