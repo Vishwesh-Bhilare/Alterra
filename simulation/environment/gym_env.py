@@ -1,11 +1,10 @@
 """
 Gymnasium environment wrapping the simulation. Sole contract surface with
-model/agents. Action is (band, dwell_option_index) — MultiDiscrete — so the
-scheduler picks both frequency and dwell time per the CORTEX pipeline spec.
+model/agents. Action is (band, dwell_option_index) — MultiDiscrete.
 
-Supports both default mode (random population via build_population) and
-manual scenario mode (explicit emitters via scenario_builder), selected by
-passing `manual_emitters` to reset() or the constructor.
+Supports default mode (random population) and manual scenario mode
+(explicit emitters), selected via manual_emitters at construction or in
+reset()'s options dict.
 
 KNOWN SIMPLIFICATION: observation "tracks" are indexed by band, not by
 deinterleaved emitter identity — swap once model/deinterleaving exists.
@@ -80,9 +79,19 @@ class AlterraEnv(gym.Env):
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
-        self._episode_idx += 1
 
-        episode_seed_rng = self._master_rng.spawn_named(f"episode_{self._episode_idx}")
+        # Episode RNG stream keyed on the *given* seed when one is provided,
+        # so reset(seed=X) always reproduces the same episode regardless of
+        # how many times reset() has been called before — required for
+        # gymnasium's check_step_determinism. Falls back to an incrementing
+        # counter only when no seed is given (distinct episode each call).
+        if seed is not None:
+            episode_key = f"seed_{seed}"
+        else:
+            self._episode_idx += 1
+            episode_key = f"episode_{self._episode_idx}"
+
+        episode_seed_rng = self._master_rng.spawn_named(episode_key)
         episode_seed = int(episode_seed_rng.integers(0, 2**31 - 1))
         episode_rng_manager = RNGManager(episode_seed)
 
