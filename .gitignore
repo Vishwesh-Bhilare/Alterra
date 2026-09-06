@@ -235,3 +235,4 @@ docker-data/
 *.pid
 *.pid.lock
 data/
+.cache/
