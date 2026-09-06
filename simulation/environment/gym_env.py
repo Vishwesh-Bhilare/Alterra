@@ -1,10 +1,14 @@
 """
-Gymnasium environment wrapping the simulation. Sole contract surface with
-model/agents. Action is (band, dwell_option_index) — MultiDiscrete.
+Gymnasium environment wrapping the simulation. Action is (band,
+dwell_option_index) — MultiDiscrete.
 
-Supports default mode (random population) and manual scenario mode
-(explicit emitters), selected via manual_emitters at construction or in
-reset()'s options dict.
+Reward now includes a novelty bonus (config: environment.reward.
+novelty_bonus) for dwelling on any band not yet visited this episode —
+added because a prior training run converged to a fixed open-loop
+schedule: with a sparse hit payoff and no exploration incentive, PPO found
+it cheaper to minimize idle/staleness cost via a fixed route than to
+actually search. false_alarm_penalty was also reduced (was drowning out
+early exploration gradient).
 
 KNOWN SIMPLIFICATION: observation "tracks" are indexed by band, not by
 deinterleaved emitter identity — swap once model/deinterleaving exists.
@@ -73,6 +77,7 @@ class AlterraEnv(gym.Env):
         self._sensor_model: SensorModel | None = None
         self._receiver: Receiver | None = None
         self._tracks: dict[int, _BandTrack] = {}
+        self._visited_bands: set[int] = set()
         self._t = 0
         self._last_band = 0
         self.last_dwell_result: DwellResult | None = None
@@ -80,11 +85,6 @@ class AlterraEnv(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
 
-        # Episode RNG stream keyed on the *given* seed when one is provided,
-        # so reset(seed=X) always reproduces the same episode regardless of
-        # how many times reset() has been called before — required for
-        # gymnasium's check_step_determinism. Falls back to an incrementing
-        # counter only when no seed is given (distinct episode each call).
         if seed is not None:
             episode_key = f"seed_{seed}"
         else:
@@ -117,6 +117,7 @@ class AlterraEnv(gym.Env):
         self._receiver = Receiver(self._spectrum_world, self._sensor_model)
 
         self._tracks = {}
+        self._visited_bands = set()
         self._t = 0
         self._last_band = 0
         self.last_dwell_result = None
@@ -160,6 +161,10 @@ class AlterraEnv(gym.Env):
     def _compute_reward(self, dwell_result: DwellResult) -> float:
         reward_cfg = self.config.environment.reward
         reward = 0.0
+
+        if dwell_result.band not in self._visited_bands:
+            reward += reward_cfg.novelty_bonus
+        self._visited_bands.add(dwell_result.band)
 
         best_hit = dwell_result.best_hit
         if best_hit is not None:
