@@ -5,6 +5,15 @@ the mean) so variance is visible.
 """
 from __future__ import annotations
 
+import os
+import sys
+
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_venv_dir = os.path.join(_repo_root, ".venv")
+_venv_python = os.path.join(_venv_dir, "bin", "python")
+if os.path.exists(_venv_python) and sys.prefix != _venv_dir:
+    os.execv(_venv_python, [_venv_python, "-m", "model.agents.evaluate"] + sys.argv[1:])
+
 import argparse
 
 import numpy as np

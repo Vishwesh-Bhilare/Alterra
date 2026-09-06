@@ -8,8 +8,16 @@ from alterra/ repo root:
 """
 from __future__ import annotations
 
-import argparse
 import os
+import sys
+
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_venv_dir = os.path.join(_repo_root, ".venv")
+_venv_python = os.path.join(_venv_dir, "bin", "python")
+if os.path.exists(_venv_python) and sys.prefix != _venv_dir:
+    os.execv(_venv_python, [_venv_python, "-m", "model.agents.train_ppo"] + sys.argv[1:])
+
+import argparse
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
