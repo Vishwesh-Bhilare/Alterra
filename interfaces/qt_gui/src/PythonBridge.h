@@ -63,4 +63,5 @@ private:
     py::object model_;
     py::object tracker_;
     py::object obs_;
+    bool lastHit_ = false;
 };

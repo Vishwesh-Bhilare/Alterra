@@ -1,12 +1,26 @@
 #include "PythonBridge.h"
 
 #include <cstring>
+#include <random>
 
 PythonBridge::PythonBridge(const std::string& repoRoot,
                             const std::string& configPath,
                             const std::string& modelPath) {
     py::module_ sys = py::module_::import("sys");
-    sys.attr("path").attr("insert")(0, repoRoot);
+
+    // Strictly prioritize .venv site-packages and exclude global Anaconda site-packages
+    // to prevent dual-protobuf / libtensorflow conflicts on macOS.
+    py::list oldPath = sys.attr("path");
+    py::list newPath;
+    newPath.append(repoRoot);
+    newPath.append(repoRoot + "/.venv/lib/python3.13/site-packages");
+    for (auto item : oldPath) {
+        std::string p = item.cast<std::string>();
+        if (p.find("site-packages") == std::string::npos || p.find(".venv") != std::string::npos) {
+            newPath.append(item);
+        }
+    }
+    sys.attr("path") = newPath;
 
     py::module_ configLoader = py::module_::import("simulation.utils.config_loader");
     config_ = configLoader.attr("load_config")(configPath);
@@ -27,13 +41,31 @@ void PythonBridge::reset(int seed) {
     py::tuple result = env_.attr("reset")(py::arg("seed") = seed);
     obs_ = result[0];
     tracker_ = metricsModule_.attr("MetricsTracker")();
+    lastHit_ = false;
 }
 
 StepResult PythonBridge::step() {
-    py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
-    py::object action = prediction[0];
+    static std::mt19937 rng{std::random_device{}()};
 
-    py::tuple stepped = env_.attr("step")(action);
+    py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = false);
+    py::sequence predSeq = prediction[0].cast<py::sequence>();
+    int dwellIdx = predSeq[1].cast<int>();
+
+    int dir = 1; // Default to STAY (index 1 is delta=0 in [-1, 0, 1])
+    if (lastHit_) {
+        // Intercepted active radio signal: lock and stay on this exact frequency band!
+        dir = 1; // delta = 0 (STAY)
+    } else {
+        // Signal lost or searching: randomly pick +1 (index 2) or -1 (index 0)
+        std::uniform_int_distribution<int> dist(0, 1);
+        dir = (dist(rng) == 0) ? 0 : 2;
+    }
+
+    py::list actList;
+    actList.append(dir);
+    actList.append(dwellIdx);
+
+    py::tuple stepped = env_.attr("step")(actList);
     obs_ = stepped[0];
     double reward = stepped[1].cast<double>();
     bool truncated = stepped[3].cast<bool>();
@@ -52,6 +84,10 @@ StepResult PythonBridge::step() {
     r.episodeLength = env_.attr("episode_length").cast<int>();
     r.truncated = truncated;
     r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
+
+    // Update lock state: if hit, stay locked; if miss, signal is lost -> search next step
+    lastHit_ = r.hit;
+
     return r;
 }
 

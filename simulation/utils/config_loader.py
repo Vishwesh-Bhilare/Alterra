@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -114,17 +114,28 @@ class RewardConfig:
     staleness_norm_slots: int
     novelty_bonus: float
     hit_confirm_floor: float
+    tracking_reward: float = 6.0
+    signal_lost_penalty: float = -0.8
+    empty_stay_penalty: float = -0.4
+    boundary_penalty: float = -0.2
 
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
     dwell_options_slots: list[int]
     reward: RewardConfig
+    action_mode: str = "relative"
+    relative_step_sizes: list[int] = field(default_factory=lambda: [-1, 0, 1])
 
 
 @dataclass(frozen=True)
 class ScenarioConfig:
     manual_scenario_path: Optional[str]
+
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    tsrd_dir: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +156,7 @@ class AlterraConfig:
     environment: EnvironmentConfig
     scenario: ScenarioConfig
     pulse: PulseConfig
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
 
 def _int_range(d: Optional[dict]) -> Optional[IntRange]:
@@ -218,14 +230,23 @@ def load_config(path: str | Path) -> AlterraConfig:
         staleness_norm_slots=int(reward_raw["staleness_norm_slots"]),
         novelty_bonus=float(reward_raw["novelty_bonus"]),
         hit_confirm_floor=float(reward_raw["hit_confirm_floor"]),
+        tracking_reward=float(reward_raw.get("tracking_reward", 6.0)),
+        signal_lost_penalty=float(reward_raw.get("signal_lost_penalty", -0.8)),
+        empty_stay_penalty=float(reward_raw.get("empty_stay_penalty", -0.4)),
+        boundary_penalty=float(reward_raw.get("boundary_penalty", -0.2)),
     )
     environment = EnvironmentConfig(
         dwell_options_slots=[int(v) for v in env_raw["dwell_options_slots"]],
         reward=reward,
+        action_mode=str(env_raw.get("action_mode", "relative")),
+        relative_step_sizes=[int(v) for v in env_raw.get("relative_step_sizes", [-1, 0, 1])],
     )
 
     scenario_raw = raw.get("scenario", {})
     scenario = ScenarioConfig(manual_scenario_path=scenario_raw.get("manual_scenario_path"))
+
+    dataset_raw = raw.get("dataset", {})
+    dataset = DatasetConfig(tsrd_dir=dataset_raw.get("tsrd_dir"))
 
     pulse_raw = raw["pulse"]
     pulse = PulseConfig(
@@ -253,4 +274,5 @@ def load_config(path: str | Path) -> AlterraConfig:
         environment=environment,
         scenario=scenario,
         pulse=pulse,
+        dataset=dataset,
     )
