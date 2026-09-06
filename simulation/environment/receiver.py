@@ -1,11 +1,13 @@
 """
 The scanning receiver: given a band and a dwell duration, samples the
-sensor model across each slot of the dwell and summarizes the result. This
-is the unit of action the RL environment exposes — one dwell = one RL step.
+sensor model across each slot of the dwell and summarizes the result. One
+dwell = one RL step.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+import numpy as np
 
 from simulation.environment.sensor_model import Detection, SensorModel
 from simulation.environment.spectrum_world import SpectrumWorld
@@ -15,7 +17,7 @@ from simulation.environment.spectrum_world import SpectrumWorld
 class DwellResult:
     band: int
     start_t: int
-    end_t: int  # exclusive
+    end_t: int
     detections: list[Detection]
 
     @property
@@ -32,6 +34,12 @@ class DwellResult:
         if not hits:
             return None
         return max(hits, key=lambda d: d.estimated_snr_db or float("-inf"))
+
+    @property
+    def mean_measured_power_dbm(self) -> float:
+        if not self.detections:
+            return float("-inf")
+        return float(np.mean([d.measured_power_dbm for d in self.detections]))
 
 
 class Receiver:

@@ -98,6 +98,9 @@ class SensorConfig:
     pd_snr50_db: float
     pd_slope_db: float
     pfa_rate: float
+    noise_reading_std_db: float
+    measured_power_norm_min: float
+    measured_power_norm_max: float
 
 
 @dataclass(frozen=True)
@@ -198,6 +201,9 @@ def load_config(path: str | Path) -> AlterraConfig:
         pd_snr50_db=float(sensor_raw["pd_snr50_db"]),
         pd_slope_db=float(sensor_raw["pd_slope_db"]),
         pfa_rate=float(sensor_raw["pfa_rate"]),
+        noise_reading_std_db=float(sensor_raw["noise_reading_std_db"]),
+        measured_power_norm_min=float(sensor_raw["measured_power_norm_min"]),
+        measured_power_norm_max=float(sensor_raw["measured_power_norm_max"]),
     )
 
     env_raw = raw["environment"]

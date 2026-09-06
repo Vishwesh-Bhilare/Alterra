@@ -58,6 +58,9 @@ sensor:
   pd_snr50_db: 8.0        # SNR (dB) at which Pd = 0.5
   pd_slope_db: 3.0        # Logistic slope of Pd(SNR) curve
   pfa_rate: 0.02          # Per-band per-slot false alarm probability
+  noise_reading_std_db: 1.5
+  measured_power_norm_min: -100.0
+  measured_power_norm_max: 40.0
 
 # Environment and RL reward structure
 environment:

@@ -1,9 +1,5 @@
 #pragma once
 
-// Python 3.14's PyType_Spec has a `slots` field; Qt's MOC-era headers
-// define `slots` as a macro (unless QT_NO_KEYWORDS is set). Guard pybind11
-// includes regardless of that build flag, since this header may be
-// included from translation units that don't set it.
 #ifdef slots
 #pragma push_macro("slots")
 #undef slots
@@ -31,6 +27,7 @@ struct StepResult {
     int t = 0;
     int episodeLength = 0;
     bool truncated = false;
+    double measuredPowerDbm = 0.0;
 };
 
 struct EpisodeMetrics {

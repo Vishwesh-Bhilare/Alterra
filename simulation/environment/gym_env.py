@@ -1,26 +1,19 @@
 """
 Gymnasium environment wrapping the simulation. Action is (band,
-dwell_option_index) — MultiDiscrete.
+dwell_option_index) -- MultiDiscrete.
 
-ROOT CAUSE FIX (this version): band_tracks previously only updated on a
-hit — a miss left the observation for that band completely unchanged, so
-the agent could not distinguish "just checked, empty" from "never
-checked." That starved observation, not reward shape or network size, was
-why prior training runs converged onto a small fixed set of bands
-regardless of per-episode truth (see docs/PROJECT_CONTEXT.md and the
-debugging session history). Every dwell now updates a `visited` signal
-independent of the `hit` signal — TRACK_FEATURE_DIM went 4 -> 6.
-Observation space shape changed: retrain from scratch, do not resume old
-checkpoints against this version.
+OBSERVATION UPGRADE (this version): every dwell now writes a normalized
+measured-power reading into band_tracks, regardless of hit/miss -- a real
+receiver always reports *something* per dwell (noise floor if empty,
+signal+noise if occupied). Previously the agent had zero signal-strength
+information on a miss. TRACK_FEATURE_DIM 6->7. Observation shape changed
+again; retrain from scratch, do not resume prior checkpoints.
 
-Reward still includes: novelty_bonus (first visit to a band this
-episode), info-gain-scaled hit reward (full value for a first-ever
-detection or a stale re-confirmation, floored at hit_confirm_floor for
-spam-revisiting a just-confirmed band), and a staleness penalty averaged
-(not summed) across currently-tracked bands.
+Prior fix (kept): visit state tracked independently of hit state, so a
+miss still updates "last checked" even without a detection.
 
 KNOWN SIMPLIFICATION: observation "tracks" are indexed by band, not by
-deinterleaved emitter identity — swap once model/deinterleaving exists.
+deinterleaved emitter identity -- swap once model/deinterleaving exists.
 """
 from __future__ import annotations
 
@@ -37,7 +30,7 @@ from simulation.environment.spectrum_world import SpectrumWorld
 from simulation.utils.config_loader import AlterraConfig
 from simulation.utils.rng import RNGManager
 
-TRACK_FEATURE_DIM = 6  # [threat_norm, confidence, time_since_hit, ever_hit, time_since_visit, ever_visited]
+TRACK_FEATURE_DIM = 7  # [threat_norm, confidence, time_since_hit, ever_hit, time_since_visit, ever_visited, last_power_norm]
 RECEIVER_FEATURE_DIM = 2
 
 
@@ -49,6 +42,7 @@ class _BandTrack:
     ever_hit: bool = False
     last_visited_t: int | None = None
     ever_visited: bool = False
+    last_measured_power_norm: float = 0.0
 
 
 class AlterraEnv(gym.Env):
@@ -92,6 +86,14 @@ class AlterraEnv(gym.Env):
         self._t = 0
         self._last_band = 0
         self.last_dwell_result: DwellResult | None = None
+
+    @property
+    def t(self) -> int:
+        return self._t
+
+    @property
+    def episode_length(self) -> int:
+        return self._episode_length
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -145,10 +147,6 @@ class AlterraEnv(gym.Env):
         self._t = dwell_result.end_t
         self._last_band = band
 
-        # Reward computed against pre-dwell track state (before
-        # _apply_dwell_to_tracks) so it can tell a first-time detection /
-        # re-confirmation of a stale track apart from spam-revisiting a
-        # band just confirmed.
         reward = self._compute_reward(dwell_result)
         self._apply_dwell_to_tracks(band, dwell_result)
 
@@ -163,13 +161,18 @@ class AlterraEnv(gym.Env):
         }
         return observation, reward, terminated, truncated, info
 
+    def _normalize_power(self, power_dbm: float) -> float:
+        lo = self.config.sensor.measured_power_norm_min
+        hi = self.config.sensor.measured_power_norm_max
+        return float(np.clip((power_dbm - lo) / (hi - lo), 0.0, 1.0))
+
     def _apply_dwell_to_tracks(self, band: int, dwell_result: DwellResult) -> None:
-        # Every dwell updates visited state, regardless of outcome — this
-        # is the fix: a miss must still be recorded, or the observation
-        # can't distinguish "checked, empty" from "never checked."
+        # Every dwell updates visit + measured-power state, regardless of
+        # outcome -- a miss is still information.
         track = self._tracks.setdefault(band, _BandTrack())
         track.ever_visited = True
         track.last_visited_t = self._t
+        track.last_measured_power_norm = self._normalize_power(dwell_result.mean_measured_power_dbm)
 
         best_hit = dwell_result.best_hit
         if best_hit is None:
@@ -221,20 +224,9 @@ class AlterraEnv(gym.Env):
 
         return float(reward)
 
-    @property
-    def t(self) -> int:
-        return self._t
-
-    @property
-    def episode_length(self) -> int:
-        return self._episode_length
-
     def _build_observation(self) -> dict[str, np.ndarray]:
         num_bands = self.config.spectrum.num_bands
         band_tracks = np.zeros((num_bands, TRACK_FEATURE_DIM), dtype=np.float32)
-        # Default to "fully stale" for both staleness features — a band
-        # never in self._tracks (never visited) must not read the same as
-        # a band visited at t=0 (staleness=0); both would otherwise be 0.0.
         band_tracks[:, 2] = 1.0
         band_tracks[:, 4] = 1.0
         staleness_norm = self.config.environment.reward.staleness_norm_slots
@@ -251,6 +243,7 @@ class AlterraEnv(gym.Env):
                 time_since_visit = self._t - track.last_visited_t
                 band_tracks[band, 4] = min(time_since_visit / staleness_norm, 1.0)
                 band_tracks[band, 5] = 1.0
+                band_tracks[band, 6] = track.last_measured_power_norm
 
         receiver_features = np.array(
             [

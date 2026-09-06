@@ -1,8 +1,11 @@
 """
 Layer B: RF front-end / sensor imperfection model. Converts SpectrumWorld's
 ground truth into what a receiver dwelling on a given band would actually
-observe — an SNR-dependent probability of detection, plus independent false
-alarms on empty bands.
+observe. Every dwell now yields a measured_power_dbm reading regardless of
+detection outcome -- a real energy detector always reports something
+(noise floor if empty, signal+noise if occupied); this is what lets the
+RL observation carry per-band signal-strength information instead of
+being blind on every miss.
 """
 from __future__ import annotations
 
@@ -21,9 +24,10 @@ class Detection:
     t: int
     hit: bool
     false_alarm: bool
-    true_occupied: bool              # ground truth: was the band actually active
-    estimated_snr_db: float | None
-    true_emitter_id: str | None      # ground truth, NOT part of the RL observation
+    true_occupied: bool
+    estimated_snr_db: float | None       # only set when occupied (ground-truth-adjacent)
+    measured_power_dbm: float             # always set -- the real observable
+    true_emitter_id: str | None
     true_threat_level: int | None
 
 
@@ -44,6 +48,7 @@ class SensorModel:
     def observe(self, band_occupancy: BandOccupancy, t: int) -> Detection:
         band = band_occupancy.band
         noise_floor = float(self.noise_floor_dbm[band])
+        reading_noise = self._rng.normal(0.0, self.config.noise_reading_std_db)
 
         if band_occupancy.is_occupied:
             signal_dbm = band_occupancy.combined_power_dbm
@@ -54,6 +59,7 @@ class SensorModel:
             return Detection(
                 band=band, t=t, hit=hit, false_alarm=False, true_occupied=True,
                 estimated_snr_db=snr_db,
+                measured_power_dbm=signal_dbm + reading_noise,
                 true_emitter_id=strongest.emitter_id if strongest else None,
                 true_threat_level=strongest.threat_level if strongest else None,
             )
@@ -61,5 +67,7 @@ class SensorModel:
         false_alarm = bool(self._rng.random() < self.config.pfa_rate)
         return Detection(
             band=band, t=t, hit=False, false_alarm=false_alarm, true_occupied=False,
-            estimated_snr_db=None, true_emitter_id=None, true_threat_level=None,
+            estimated_snr_db=None,
+            measured_power_dbm=noise_floor + reading_noise,
+            true_emitter_id=None, true_threat_level=None,
         )

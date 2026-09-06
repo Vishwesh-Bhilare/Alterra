@@ -51,6 +51,7 @@ StepResult PythonBridge::step() {
     r.t = env_.attr("t").cast<int>();
     r.episodeLength = env_.attr("episode_length").cast<int>();
     r.truncated = truncated;
+    r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
     return r;
 }
 
