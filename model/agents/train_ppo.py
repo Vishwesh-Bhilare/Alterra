@@ -19,6 +19,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from simulation.environment import AlterraEnv
 from simulation.utils.config_loader import load_config
+from model.agents.rnn_policy import PPORNNExtractor
 
 
 def make_env(config_path: str):
@@ -34,7 +35,8 @@ def main():
     parser.add_argument("--timesteps", type=int, default=2_000_000)
     parser.add_argument("--n-envs", type=int, default=os.cpu_count() or 4)
     parser.add_argument("--ent-coef", type=float, default=0.03)
-    parser.add_argument("--out", default="model/agents/checkpoints/ppo_scheduler_full.zip")
+    parser.add_argument("--rnn-hidden-dim", type=int, default=64)
+    parser.add_argument("--out", default="model/agents/checkpoints/best/best_model.zip")
     parser.add_argument("--tensorboard-log", default="model/agents/tb_logs")
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
     parser.add_argument("--eval-freq", type=int, default=50_000)
@@ -48,8 +50,14 @@ def main():
 
     ckpt_dir = os.path.dirname(args.out) or "."
     os.makedirs(ckpt_dir, exist_ok=True)
-    best_dir = os.path.join(ckpt_dir, "best")
+    best_dir = os.path.join(ckpt_dir, "best") if not ckpt_dir.endswith("best") else ckpt_dir
     os.makedirs(best_dir, exist_ok=True)
+
+    policy_kwargs = dict(
+        features_extractor_class=PPORNNExtractor,
+        features_extractor_kwargs=dict(rnn_hidden_dim=args.rnn_hidden_dim, features_dim=256),
+        net_arch=dict(pi=[128, 64], vf=[128, 64]),
+    )
 
     if args.resume_from:
         model = PPO.load(args.resume_from, env=vec_env, tensorboard_log=args.tensorboard_log)
@@ -59,12 +67,7 @@ def main():
         model = PPO(
             "MultiInputPolicy", vec_env, verbose=1,
             tensorboard_log=args.tensorboard_log, ent_coef=args.ent_coef,
-            # Default net_arch (64x64) is too thin to learn per-band
-            # conditional value from a flattened 512-dim mostly-sparse
-            # band_tracks observation -- it was learning a coarse global
-            # prior over which band to camp on instead of reacting to
-            # per-episode state.
-            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
+            policy_kwargs=policy_kwargs,
         )
 
     checkpoint_callback = CheckpointCallback(

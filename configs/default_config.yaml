@@ -67,6 +67,8 @@ environment:
   action_mode: "relative"                 # "relative" ([-1, 0, +1]) or "absolute"
   relative_step_sizes: [-1, 0, 1]         # Down, Stay, Up
   dwell_options_slots: [3, 5, 8, 12]
+  history_length: 16                      # Hit/Miss sequence length stored for RNN
+  rnn_hidden_dim: 64                      # RNN hidden state dimension
   reward:
     hit_reward_base: 10.0
     threat_weight_levels: [1, 2, 3]

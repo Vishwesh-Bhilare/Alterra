@@ -10,6 +10,7 @@ import argparse
 import numpy as np
 from stable_baselines3 import PPO
 
+from model.agents.rnn_policy import PPORNNExtractor
 from simulation.environment import AlterraEnv
 from simulation.metrics import MetricsTracker
 from simulation.utils.config_loader import load_config

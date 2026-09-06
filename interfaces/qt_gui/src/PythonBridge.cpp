@@ -28,6 +28,7 @@ PythonBridge::PythonBridge(const std::string& repoRoot,
     py::module_ envModule = py::module_::import("simulation.environment");
     env_ = envModule.attr("AlterraEnv")(config_);
 
+    py::module_ rnnPolicy = py::module_::import("model.agents.rnn_policy");
     py::module_ sb3 = py::module_::import("stable_baselines3");
     model_ = sb3.attr("PPO").attr("load")(modelPath);
 
