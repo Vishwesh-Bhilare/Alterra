@@ -326,13 +326,22 @@ python -m model.agents.evaluate \
 ```
 
 **Empirical Performance (Deterministic Rollouts):**
-| Metric | Baseline Linear Scan | PPO + RNN Smart Scheduler |
-| :--- | :--- | :--- |
-| **Probability of Detection ($P_d$)** | $52.4\%$ | **$100.0\%$** |
-| **False Alarm Rate ($P_{fa}$)** | $6.8\%$ | **$2.0\%$** |
-| **Average Intercept Rate** | $28.1\%$ | **$90.3\%$** |
-| **Percent Correct Classification** | $84.2\%$ | **$98.3\%$** |
-| **Mean Episode Total Reward** | $\sim 140$ | **$1084.91$** (Max $1988.89$) |
+| Metric | Baseline Linear Scan | Standard PPO | PPO + RNN Smart Scheduler |
+| :--- | :--- | :--- | :--- |
+| **Probability of Detection ($P_d$)** | $52.4\%$ | $99.0\%$ | **$100.0\%$** |
+| **False Alarm Rate ($P_{fa}$)** | $6.8\%$ | $2.2\%$ | **$2.0\%$** |
+| **Average Intercept Rate** | $28.1\%$ | $0.990$ | **$1.090$** (Multi-seed mean: **$1.345$**) |
+| **Percent Correct Classification** | $84.2\%$ | $97.5\%$ | **$98.3\%$** |
+| **Average Reward per Dwell** | $\sim 1.4$ | $7.423$ | **$10.809$ (+45.6%)** |
+
+### Visual Comparison in C++ Qt GUI (Seed 32707)
+
+See detailed analysis in [`screenshots/README.md`](screenshots/README.md):
+
+| Baseline PPO (`screenshots/1_ppo_only.png`) | PPO + RNN Smart Scheduler (`screenshots/2_ppo_rnn.png`) |
+| :---: | :---: |
+| ![PPO Baseline](screenshots/1_ppo_only.png) | ![PPO + RNN](screenshots/2_ppo_rnn.png) |
+| Localized drifting; misses distant pulse trains | Systematic triangular sweep-and-lock across full spectrum |
 
 ---
 
