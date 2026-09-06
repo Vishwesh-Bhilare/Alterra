@@ -48,19 +48,10 @@ void PythonBridge::reset(int seed) {
 StepResult PythonBridge::step() {
     static std::mt19937 rng{std::random_device{}()};
 
-    py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = false);
+    py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
     py::sequence predSeq = prediction[0].cast<py::sequence>();
+    int dir = predSeq[0].cast<int>();
     int dwellIdx = predSeq[1].cast<int>();
-
-    int dir = 1; // Default to STAY (index 1 is delta=0 in [-1, 0, 1])
-    if (lastHit_) {
-        // Intercepted active radio signal: lock and stay on this exact frequency band!
-        dir = 1; // delta = 0 (STAY)
-    } else {
-        // Signal lost or searching: randomly pick +1 (index 2) or -1 (index 0)
-        std::uniform_int_distribution<int> dist(0, 1);
-        dir = (dist(rng) == 0) ? 0 : 2;
-    }
 
     py::list actList;
     actList.append(dir);
