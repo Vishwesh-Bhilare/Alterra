@@ -77,6 +77,17 @@ environment:
     staleness_penalty_coeff: 0.02           # How much to penalize old observations
     staleness_norm_slots: 200               # Normalization horizon for staleness
 
+# Non-adaptive baseline receiver, for comparison against the RL scheduler.
+# See simulation/environment/traditional_scanner.py -- both modes are
+# drawn from Apfeld, Charlish & Koch, "An Adaptive Receiver Search
+# Strategy for Electronic Support" (Fraunhofer FKIE, IEEE 2016).
+comparison:
+  traditional_scan:
+    mode: sequential                        # "sequential" | "balanced_random"
+    dwell_slots: 8                          # fixed per-band dwell time (not tied to the RL
+                                             # agent's dwell_options_slots -- a real legacy
+                                             # receiver's dwell time is a hardware property)
+
 scenario:
   manual_scenario_path: null   # set via --scenario CLI flag; null = default random population
 

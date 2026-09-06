@@ -6,6 +6,9 @@
 #include <QLabel>
 #include <QSpinBox>
 #include <QSlider>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QGroupBox>
 #include <QTimer>
 #include <memory>
 
@@ -27,6 +30,9 @@ private Q_SLOTS:
     void onRandomSeed();
     void onStepOnce();
     void onSpeedChanged(int value);
+    void onApplyConfig();
+    void onModeChanged(int index);
+    void onOverrideEmittersToggled(bool checked);
 
 private:
     std::unique_ptr<PythonBridge> bridge_;
@@ -42,6 +48,16 @@ private:
     bool running_ = false;
     int prevT_ = 0;
 
+    // Manual configuration panel -- see PythonBridge::reconfigure().
+    QComboBox* modeCombo_;
+    QSpinBox* episodeLengthSpin_;
+    QCheckBox* overrideEmittersCheck_;
+    QSpinBox* numEmittersSpin_;
+    QSpinBox* traditionalDwellSpin_;
+    QLabel* traditionalDwellLabel_;
+    QPushButton* applyConfigButton_;
+
     void doStep();
     void updateMetricsLabel();
+    SchedulerMode selectedMode() const;
 };

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -123,6 +124,17 @@ class EnvironmentConfig:
 
 
 @dataclass(frozen=True)
+class TraditionalScanConfig:
+    dwell_slots: int
+    mode: str  # "sequential" | "balanced_random" -- see traditional_scanner.py
+
+
+@dataclass(frozen=True)
+class ComparisonConfig:
+    traditional_scan: TraditionalScanConfig
+
+
+@dataclass(frozen=True)
 class ScenarioConfig:
     manual_scenario_path: Optional[str]
 
@@ -143,6 +155,7 @@ class AlterraConfig:
     emitters: EmittersConfig
     sensor: SensorConfig
     environment: EnvironmentConfig
+    comparison: ComparisonConfig
     scenario: ScenarioConfig
     pulse: PulseConfig
 
@@ -224,6 +237,15 @@ def load_config(path: str | Path) -> AlterraConfig:
         reward=reward,
     )
 
+    comparison_raw = raw.get("comparison", {})
+    traditional_scan_raw = comparison_raw.get("traditional_scan", {})
+    comparison = ComparisonConfig(
+        traditional_scan=TraditionalScanConfig(
+            dwell_slots=int(traditional_scan_raw.get("dwell_slots", 8)),
+            mode=str(traditional_scan_raw.get("mode", "sequential")),
+        )
+    )
+
     scenario_raw = raw.get("scenario", {})
     scenario = ScenarioConfig(manual_scenario_path=scenario_raw.get("manual_scenario_path"))
 
@@ -251,6 +273,62 @@ def load_config(path: str | Path) -> AlterraConfig:
         ),
         sensor=sensor,
         environment=environment,
+        comparison=comparison,
         scenario=scenario,
         pulse=pulse,
     )
+
+
+def apply_overrides(
+    config: AlterraConfig,
+    *,
+    episode_length_slots: int | None = None,
+    num_emitters: int | None = None,
+    traditional_scan_mode: str | None = None,
+    traditional_dwell_slots: int | None = None,
+) -> AlterraConfig:
+    """Returns a modified copy of `config` for manual, one-off runs (GUI
+    settings changes, CLI comparison runs, quick experiments) without
+    editing the YAML. Each argument left as None leaves that part of the
+    config untouched.
+
+    num_emitters fixes the exact population size for the run (overrides
+    both ends of emitters.population.total_count_range) -- this is the
+    "how many communications happen at the same time" knob: more emitters
+    means more frequent overlapping activity for a single-channel receiver
+    to contend with.
+    """
+    if episode_length_slots is not None:
+        config = dataclasses.replace(
+            config, timing=dataclasses.replace(config.timing, episode_length_slots=episode_length_slots)
+        )
+
+    if num_emitters is not None:
+        config = dataclasses.replace(
+            config,
+            emitters=dataclasses.replace(
+                config.emitters,
+                population=dataclasses.replace(
+                    config.emitters.population,
+                    total_count_range=IntRange(num_emitters, num_emitters),
+                ),
+            ),
+        )
+
+    if traditional_scan_mode is not None or traditional_dwell_slots is not None:
+        current = config.comparison.traditional_scan
+        config = dataclasses.replace(
+            config,
+            comparison=dataclasses.replace(
+                config.comparison,
+                traditional_scan=dataclasses.replace(
+                    current,
+                    mode=traditional_scan_mode if traditional_scan_mode is not None else current.mode,
+                    dwell_slots=(
+                        traditional_dwell_slots if traditional_dwell_slots is not None else current.dwell_slots
+                    ),
+                ),
+            ),
+        )
+
+    return config
