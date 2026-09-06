@@ -1,8 +1,3 @@
-"""
-Loads configs/*.yaml into typed dataclasses. Every distribution/range an
-emitter, sensor, or environment component needs at runtime comes from here —
-nothing in simulation/ code should hardcode a numeric default.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -103,6 +98,9 @@ class SensorConfig:
     pd_snr50_db: float
     pd_slope_db: float
     pfa_rate: float
+    noise_reading_std_db: float
+    measured_power_norm_min: float
+    measured_power_norm_max: float
 
 
 @dataclass(frozen=True)
@@ -114,12 +112,27 @@ class RewardConfig:
     false_alarm_penalty: float
     staleness_penalty_coeff: float
     staleness_norm_slots: int
+    novelty_bonus: float
+    hit_confirm_floor: float
 
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
-    dwell_slots_per_action: int
+    dwell_options_slots: list[int]
     reward: RewardConfig
+
+
+@dataclass(frozen=True)
+class ScenarioConfig:
+    manual_scenario_path: Optional[str]
+
+
+@dataclass(frozen=True)
+class PulseConfig:
+    pri_s_range: FloatRange
+    pw_s_range: FloatRange
+    pri_jitter_std_s: float
+    doa_deg_range: FloatRange
 
 
 @dataclass(frozen=True)
@@ -130,6 +143,8 @@ class AlterraConfig:
     emitters: EmittersConfig
     sensor: SensorConfig
     environment: EnvironmentConfig
+    scenario: ScenarioConfig
+    pulse: PulseConfig
 
 
 def _int_range(d: Optional[dict]) -> Optional[IntRange]:
@@ -186,6 +201,9 @@ def load_config(path: str | Path) -> AlterraConfig:
         pd_snr50_db=float(sensor_raw["pd_snr50_db"]),
         pd_slope_db=float(sensor_raw["pd_slope_db"]),
         pfa_rate=float(sensor_raw["pfa_rate"]),
+        noise_reading_std_db=float(sensor_raw["noise_reading_std_db"]),
+        measured_power_norm_min=float(sensor_raw["measured_power_norm_min"]),
+        measured_power_norm_max=float(sensor_raw["measured_power_norm_max"]),
     )
 
     env_raw = raw["environment"]
@@ -198,19 +216,41 @@ def load_config(path: str | Path) -> AlterraConfig:
         false_alarm_penalty=float(reward_raw["false_alarm_penalty"]),
         staleness_penalty_coeff=float(reward_raw["staleness_penalty_coeff"]),
         staleness_norm_slots=int(reward_raw["staleness_norm_slots"]),
+        novelty_bonus=float(reward_raw["novelty_bonus"]),
+        hit_confirm_floor=float(reward_raw["hit_confirm_floor"]),
     )
     environment = EnvironmentConfig(
-        dwell_slots_per_action=int(env_raw["dwell_slots_per_action"]),
+        dwell_options_slots=[int(v) for v in env_raw["dwell_options_slots"]],
         reward=reward,
+    )
+
+    scenario_raw = raw.get("scenario", {})
+    scenario = ScenarioConfig(manual_scenario_path=scenario_raw.get("manual_scenario_path"))
+
+    pulse_raw = raw["pulse"]
+    pulse = PulseConfig(
+        pri_s_range=_float_range(pulse_raw["pri_s_range"]),
+        pw_s_range=_float_range(pulse_raw["pw_s_range"]),
+        pri_jitter_std_s=float(pulse_raw["pri_jitter_std_s"]),
+        doa_deg_range=_float_range(pulse_raw["doa_deg_range"]),
     )
 
     return AlterraConfig(
         rng_seed=int(raw["rng_seed"]),
-        spectrum=SpectrumConfig(**raw["spectrum"]),
-        timing=TimingConfig(**raw["timing"]),
+        spectrum=SpectrumConfig(
+            num_bands=int(raw["spectrum"]["num_bands"]),
+            band_bandwidth_hz=float(raw["spectrum"]["band_bandwidth_hz"]),
+            band_start_freq_hz=float(raw["spectrum"]["band_start_freq_hz"]),
+        ),
+        timing=TimingConfig(
+            slot_duration_s=float(raw["timing"]["slot_duration_s"]),
+            episode_length_slots=int(raw["timing"]["episode_length_slots"]),
+        ),
         emitters=EmittersConfig(
             population=population, fixed=fixed, agile=agile, periodic_scan=periodic_scan
         ),
         sensor=sensor,
         environment=environment,
+        scenario=scenario,
+        pulse=pulse,
     )

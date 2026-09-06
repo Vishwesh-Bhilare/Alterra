@@ -1,609 +1,401 @@
-# Alterra
+# Alterra — Project Context
 
-### Smart Scan Strategy for Electronic Warfare
-
-**Alterra** is an AI-driven Electronic Support (ES) receiver scheduling system developed for **Smart India Hackathon 2026**, targeting **DRDO Problem Statement 26055: "Smart Scan strategy for Electronic Warfare."**
-
-The project focuses on intelligently scheduling a receiver across a wide frequency spectrum to reduce intercept time and increase the probability of detecting relevant emitters.
+Sole reference document for this repo. Read this before touching code — it
+supersedes any earlier partial context from chat history. Keep it current.
 
 ---
 
-## Overview
+## 1. What this project is
 
-Modern Electronic Warfare receivers may need to monitor a spectrum that is significantly wider than their instantaneous bandwidth. As a result, the receiver must continuously scan different frequency bands over time.
+**Alterra** is our SIH (Smart India Hackathon) 2026 project, built against
+**DRDO problem statement 26055: "Smart Scan strategy for Electronic
+Warfare."** The team's product name (from the SIH idea PPT) is **CORTEX —
+Cognitive Observation and Real Time Emitter Exploration**; Alterra is the
+team/repo name.
 
-Traditional open-loop scanning strategies generally rely on prior intelligence and attempt to cover the spectrum as quickly as possible. This can waste valuable dwell time on inactive or low-priority emitters.
+- **GitHub**: https://github.com/Vishwesh-Bhilare/Alterra
+- **Organization**: DRDO — Department of Defence Production / IDEX
+- **Category**: Software | **Theme**: Robotics and Drones
 
-Alterra treats interception as a **two-dimensional search problem**:
+### 1.1 The problem
+Detecting hostile communication/radar signals starts with scanning a wide
+frequency spectrum. Sensors have an instantaneous bandwidth an order of
+magnitude below total spectrum, so a receiver sweeps bands over time.
+"Open loop" strategies (pre-mission data only) waste dwell time on
+non-threats instead of prioritizing new/threatening emitters.
 
-* **Frequency:** Which band should the receiver observe?
-* **Time:** When should it observe that band?
+**Ask**: a **Smart Scan Strategy** — interception as a two-dimensional
+search problem (adjust receiver frequency at the correct time). Required: a
+receiver system model fed by a simulated RF environment with ground truth;
+predict intercept time/ratio against spatially-scanning and/or
+frequency-agile emitters; a robust ML scheduler trained on hits/misses;
+work out optimal interception of a periodic-scan emitter; figures of
+merit: **Pd, Pfa, sensitivity, avg intercept rate, avg reward/cost, percent
+correct predictions, avg intercept time error.**
 
-The system learns from previous **hits and misses** to dynamically prioritize receiver actions.
-
-### Core objectives
-
-* Minimize emitter intercept time.
-* Maximize interception rate.
-* Handle frequency-agile emitters.
-* Handle periodic-scanning emitters.
-* Account for imperfect sensor detections.
-* Learn receiver scheduling policies from simulated observations.
-* Compare heuristic and reinforcement-learning approaches.
-
----
-
-## System Architecture
-
-```text
-                    ┌─────────────────────────────┐
-                    │      RF Environment         │
-                    │                             │
-                    │ Fixed / Agile / Periodic    │
-                    │ Scan Emitters               │
-                    └──────────────┬──────────────┘
-                                   │
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │     Spectrum World          │
-                    │                             │
-                    │ Ground-truth band × time    │
-                    │ occupancy                   │
-                    └──────────────┬──────────────┘
-                                   │
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │       Sensor Model           │
-                    │                             │
-                    │ SNR → Pd / Pfa → Detection  │
-                    └──────────────┬──────────────┘
-                                   │
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │    Receiver / Gymnasium      │
-                    │          Environment         │
-                    │                             │
-                    │ Observation → Action →      │
-                    │ Reward                     │
-                    └──────────────┬──────────────┘
-                                   │
-                  ┌────────────────┼────────────────┐
-                  │                │                │
-                  ▼                ▼                ▼
-             ┌────────┐      ┌──────────┐      ┌───────┐
-             │ CAROTA │      │ Double   │      │  PPO  │
-             │Baseline│      │   DQN    │      │Proposed│
-             └────────┘      └──────────┘      └───────┘
-                  │                │                │
-                  └────────────────┼────────────────┘
-                                   ▼
-                    ┌─────────────────────────────┐
-                    │      Performance Metrics     │
-                    │                             │
-                    │ Pd / Pfa / Intercept Rate   │
-                    │ Reward / Intercept Time     │
-                    └─────────────────────────────┘
-```
+**Why this shapes how we build it**: no real training data exists — the
+simulation *is* the dataset. Hence the hard rule: no hardcoded values in
+`simulation/`, only config-driven sampled distributions.
 
 ---
 
-## Signal Processing Pipeline
+## 2. Team & ownership boundary
 
-The eventual intelligence pipeline is designed around:
+- **Vishy**: `simulation/` (RF env, emitters, sensor model, gym env,
+  metrics, viz, PDW export, dataset generation, CLI) — **and has now also
+  trained both `model/deinterleaving` and `model/agents`**, originally the
+  teammate's scope, to avoid integration mismatches before handoff.
+- **Teammate**: `model/perception` (MS-UNet1D) still open; should review
+  and continue iterating on `model/deinterleaving` / `model/agents` now
+  that a first trained version of each exists.
 
-```text
-RF / IQ Signals
-       │
-       ▼
-  MS-UNet1D
-       │
-       ▼
-Pulse Segmentation
-       │
-       ▼
-   PDW Extraction
-       │
-       ├── TOA
-       ├── PRI
-       ├── PW
-       ├── CF
-       └── DOA
-       │
-       ▼
-   SEDCAM
-       │
-       ├── SEM
-       ├── CVR-DCM
-       └── DBSCAN
-       │
-       ▼
- Deinterleaved Emitters
-       │
-       ▼
- Emitter State Construction
-       │
-       ▼
- Intelligent Scheduling
-```
+**`simulation/` and `model/` still never import each other's internals** —
+`model.agents` only depends on `simulation.environment.gym_env.AlterraEnv`.
 
 ---
 
-## Scheduling Algorithms
+## 3. System architecture
 
-Alterra compares three scheduling approaches.
+### CORTEX pipeline (SIH idea PPT)
 
-| Algorithm      | Type                   | Purpose                           |
-| -------------- | ---------------------- | --------------------------------- |
-| **CAROTA**     | Heuristic              | Classical priority-based baseline |
-| **Double DQN** | Reinforcement Learning | Value-based RL baseline           |
-| **PPO**        | Reinforcement Learning | Proposed adaptive scheduler       |
+Simulate → Detect (MS-UNet1D → PDWs) → Deinterleave (SEDCAM) →
+Assess (LSTM/GRU + DSCAC/CAROTA known/unknown + uncertainty) →
+Decide (PPO: band + dwell time) → Act (receiver retunes, loop continues)
 
-### CAROTA
 
-CAROTA provides a non-RL baseline based on priority and receiver constraints.
+### Confirmed workflow diagram (10-step loop, matches gym_env 1:1)
 
-### Double DQN
+1 EW Simulation → 2 Initialize environment & receiver state →
+3 Band-wise state/belief → 4 PPO smart scan scheduler → 5 Select next scan →
+6 Receiver collects RF observations → 7 Observe selected band →
+8 Evaluate observations (HIT/MISS) → 9 Update band-wise state →
+10 Calculate reward & update PPO → (feedback loop to step 3)
 
-Double DQN formulates receiver band selection as a discrete-action reinforcement-learning problem and provides a stronger learned baseline.
+Mapping to code: step 3 = `AlterraEnv._build_observation`'s `band_tracks`;
+step 4-5 = the PPO action (`MultiDiscrete[band, dwell_idx]`); step 6-7 =
+`Receiver.dwell`; step 8 = `Detection.hit`; step 9 =
+`_apply_dwell_to_tracks`; step 10 = `_compute_reward` + SB3's own PPO
+update. **This confirms band-indexed state (not emitter-indexed) is the
+intended design, not just a placeholder** — deinterleaving refines it
+later but was never meant to block the RL loop.
 
-### PPO
+> **Open item, still unresolved**: the 13-step technical-approach slide's
+> step 12 ("evaluate HIT/MISS/**IG**") implies an information-gain /
+> uncertainty term in the reward tied to DSCAC/CAROTA's novelty output.
+> Not yet implemented — `_compute_reward` only has
+> hit/false-alarm/staleness terms. Revisit once DSCAC/CAROTA produces a
+> usable uncertainty signal.
 
-PPO is the proposed scheduler. It learns a policy for dynamically selecting receiver actions based on emitter state and previous observations.
-
-All approaches are evaluated using the same simulated environment and performance metrics.
-
----
-
-## Simulation
-
-The simulation is a core part of Alterra rather than simply a testing utility.
-
-Because the problem assumes that no prior intelligence about emitters is available, the simulation acts as the **synthetic data-generation layer** from which the learning system obtains its experience.
-
-### Two-layer simulation architecture
-
-#### Layer A: Environment Truth
-
-The environment maintains the ground truth for:
-
-* Emitter identity
-* Frequency band
-* Transmission state
-* Transmit power
-* Time slot
-
-This produces a band × time representation of the RF environment.
-
-#### Layer B: Sensor Model
-
-The sensor model converts ground truth into imperfect receiver observations.
-
-It models effects such as:
-
-* Signal-to-noise ratio
-* Probability of detection (`Pd`)
-* Probability of false alarm (`Pfa`)
-* Power variation
-* Missed detections
-
-The scheduler therefore does **not** receive perfect ground truth.
+### 4 zones + full tech stack — deployment-phase, not SIH-prototype critical path
+Zone 1 Users/External Services, Zone 2 Frontend (EW Control Dashboard),
+Zone 3 Backend (API gateway, orchestration, DBs), Zone 4 AI/Intelligence
+Layer (the CORTEX pipeline + AI Model Store). Stack: Python/C++,
+TensorFlow/PyTorch, SB3+CAROTA, MS-UNet1D/SEDCAM/PDW extraction,
+PostgreSQL/Redis/InfluxDB, REST API, Docker/GitHub/Nginx, Qt(C++)+
+Plotly/Matplotlib. **Not started** — CLI-first was the agreed plan; GUI
+explicitly deferred until simulation + model are validated.
 
 ---
 
-## Emitter Models
+## 4. Repository layout (current)
 
-Three emitter behaviors are currently implemented.
-
-### Fixed Emitter
-
-A fixed emitter remains on a particular frequency band while its transmission activity follows a stochastic ON/OFF process.
-
-```text
-Band
- │
- ├──────────────────────────────
- │       ON       OFF     ON
- │     ██████     ██     █████
- │
- └──────────────────────────────► Time
-```
-
-### Agile Emitter
-
-An agile emitter selects a set of frequency bands and hops between them during an episode.
-
-```text
-Frequency
-   ▲
-   │        █
-   │              █
-   │  █
-   │                    █
-   │          █
-   └──────────────────────────► Time
-```
-
-The hop dwell duration and number of hop bands are sampled from configuration-defined distributions.
-
-### Periodic Scan Emitter
-
-A periodic scan emitter sweeps through a contiguous frequency window and dwells on each band before moving to the next.
-
-```text
-Frequency
-   ▲
-   │       ┌─────────┐
-   │      /           │
-   │     /             │
-   │    /               │
-   │   /                 │
-   └──────────────────────────► Time
-```
-
-This emitter is particularly important because the DRDO problem explicitly requires investigation of optimal interception of periodic-scan receivers/emitters.
-
----
-
-## Burst Model
-
-Emitter activity is generated using a two-state Markov process.
-
-The process is parameterized by:
-
-* Target duty cycle `D`
-* Mean ON burst length `L`
-
-The transition probabilities are:
-
-```text
-p(ON → OFF) = 1 / L
-
-p(OFF → ON) = D × p(ON → OFF) / (1 - D)
-```
-
-The initial state is sampled from the stationary distribution, avoiding a systematic OFF-state bias at the beginning of episodes.
-
----
-
-## Reproducibility
-
-Alterra uses independent deterministic random-number streams through `numpy.random.SeedSequence`.
-
-Emitter streams are identified using stable names such as:
-
-```text
-emitter_population_selection
-fixed_003
-agile_002
-periodic_scan_001
-```
-
-This means that adding or reordering components does not unnecessarily change the random sequences used by existing components.
-
-Emitter schedules are also **precomputed during `reset()`** rather than generated inside `state_at()`.
-
-Therefore:
-
-```text
-reset()
-   │
-   ▼
-Generate complete episode schedule
-   │
-   ▼
-state_at(t)
-   │
-   ▼
-O(1) deterministic lookup
-```
-
----
-
-## Configuration
-
-Alterra follows a strict **configuration-driven design**.
-
-Tunable simulation parameters belong in:
-
-```text
-configs/default_config.yaml
-```
-
-Examples include:
-
-* Number of frequency bands
-* Bandwidth
-* Starting frequency
-* Episode length
-* Slot duration
-* Emitter population
-* Threat-level distribution
-* Frequency-hopping ranges
-* Burst parameters
-* Power ranges
-* Sensor parameters
-
-The simulation code should not contain hardcoded tunable numeric defaults.
-
----
-
-## Repository Structure
-
-```text
 alterra/
-│
 ├── configs/
-│   └── default_config.yaml
-│
-├── simulation/
-│   ├── emitters/
-│   │   ├── base_emitter.py
-│   │   ├── fixed_emitter.py
-│   │   ├── agile_emitter.py
-│   │   ├── periodic_scan_emitter.py
-│   │   └── schedule_utils.py
-│   │
-│   ├── environment/
-│   │   ├── spectrum_world.py
-│   │   ├── sensor_model.py
-│   │   ├── receiver.py
-│   │   └── gym_env.py
-│   │
-│   ├── metrics/
-│   │
-│   ├── utils/
-│   │   ├── rng.py
-│   │   └── config_loader.py
-│   │
-│   └── viz/
-│
+│ ├── default_config.yaml
+│ ├── deinterleaving_train.yaml
+│ └── scenarios/manual_example.yaml
+├── simulation/ # DONE (see section 5)
+│ ├── emitters/ environment/ metrics/ utils/ viz/
 ├── model/
-│   ├── perception/
-│   │   ├── MS-UNet1D
-│   │   └── PDW extraction
-│   │
-│   ├── deinterleaving/
-│   │   └── SEDCAM
-│   │
-│   └── agents/
-│       ├── CAROTA
-│       ├── Double DQN
-│       └── PPO
-│
-├── interfaces/
-│   ├── cli/
-│   └── web/
-│
-├── docs/
-│   └── PROJECT_CONTEXT.md
-│
-├── scripts/
-├── tests/
-├── pyproject.toml
-└── requirements.txt
-```
+│ ├── perception/ # NOT STARTED (teammate — MS-UNet1D)
+│ ├── deinterleaving/ # DONE — first trained version (section 6)
+│ │ ├── dataset.py model.py losses.py train.py
+│ │ └── checkpoints/encoder_epoch{1..10}.pt
+│ └── agents/ # DONE — first trained version (section 7)
+│ ├── train_ppo.py evaluate.py
+│ └── checkpoints/ tb_logs/
+├── interfaces/cli/main.py # DONE, in active use
+├── interfaces/web/ # empty — future
+├── scripts/generate_dataset.py # DONE
+├── docs/PROJECT_CONTEXT.md # this file
+├── tests/ # NOT YET WRITTEN
+└── data/ # generated sim datasets — gitignore
+
+Note: the Turing Synthetic Radar Dataset used for `model/deinterleaving`
+training lives **outside this repo** (path passed via `--train-dir`/
+`--val-dir`), not under `alterra/`.
 
 ---
 
-## Current Development Status
+## 5. Simulation (`simulation/`) — summary, see prior detail preserved below
 
-### Phase 1: Simulation and Data Generation
+Two-layer design: Layer A truth engine (`spectrum_world.py`), Layer B
+sensor/RF front-end (`sensor_model.py`, SNR-dependent Pd/Pfa). Time in
+slots (default 1ms × 2000 = 2s episodes), frequency in bands (default 128
+× 70MHz from 1GHz). Three emitter types (Fixed/Agile/PeriodicScan) via
+`BaseEmitter`, default (`emitter_factory`) or manual
+(`scenario_builder`) construction, both config-driven, no hardcoded
+values. Two-state Markov burst model parameterized by duty cycle + mean
+burst length. RNG via `RNGManager.spawn_named(<stable-id>)` throughout.
 
-| Component                     | Status      |
-| ----------------------------- | ----------- |
-| Configuration system          | Done        |
-| RNG management                | Done        |
-| Base emitter                  | Done        |
-| Fixed emitter                 | Done        |
-| Agile emitter                 | Done        |
-| Periodic scan emitter         | Done        |
-| Emitter population generation | Done        |
-| CLI emitter preview           | Done        |
-| Spectrum world                | In progress |
-| Sensor model                  | In progress |
-| Receiver                      | In progress |
-| Gymnasium environment         | In progress |
-| Metrics                       | Planned     |
-| Visualization                 | Planned     |
+`AlterraEnv`: `MultiDiscrete([num_bands, len(dwell_options)])` action
+(band + dwell time together, per the confirmed workflow diagram);
+Dict observation (`band_tracks`: threat/confidence/staleness/ever-observed
+per band; `receiver`: last band + episode progress); reward =
+threat-weighted hit − false-alarm penalty − per-band staleness penalty.
+`reset(seed=X)` is now correctly deterministic per seed (fixed a bug where
+it wasn't — `gymnasium.utils.env_checker.check_env` passes).
 
-### Phase 2: AI / Signal Processing
+Metrics (`rollout_metrics.py`) compute all 7 problem-statement figures of
+merit except the still-open IG/uncertainty term. Viz
+(`spectrogram_plot.py`) confirmed visually correct. PDW export
+(`pdw_export.py`) is a ground-truth stand-in for the raw-IQ+MS-UNet1D
+detection stage (no raw IQ synthesized) — `TOA/PRI/PW/CF/DOA` per pulse,
+merged into one time-sorted mixed stream. Batch generation via
+`scripts/generate_dataset.py` (truth matrix + PDWs + emitter metadata per
+episode + manifest.json).
 
-Planned components:
-
-* MS-UNet1D pulse segmentation
-* PDW extraction
-* SEDCAM deinterleaving
-* Emitter state construction
-* CAROTA
-* Double DQN
-* PPO
-
----
-
-## CLI
-
-The current CLI can preview generated emitter populations:
-
-```bash
-alterra emitters preview
-```
-
-A custom configuration can be supplied with:
-
-```bash
-alterra emitters preview --config configs/default_config.yaml
-```
-
-An episode length can also be overridden:
-
-```bash
-alterra emitters preview --episode-length 2000
-```
+**YAML gotcha**: no underscore digit separators (`5_000_000` parses as a
+string) — use `70e6`/`1.0e9` style; loader explicitly casts every numeric
+field rather than trusting `**raw[...]`.
 
 ---
 
-## Performance Metrics
+## 6. Deinterleaving model (`model/deinterleaving/`) — trained, first version
 
-The system will evaluate scheduling strategies using the figures of merit specified by the problem statement:
+Trained on the **Turing Synthetic Radar Dataset**, `scan` split (realistic
+sweeping receiver; `archive` split has an incompatible schema and is out
+of scope, `stare` split is supported by the same code but much heavier per
+file).
 
-* **Probability of Detection (`Pd`)**
-* **Probability of False Alarm (`Pfa`)**
-* **Sensitivity**
-* **Average Intercept Rate**
-* **Average Reward / Cost**
-* **Percentage of Correct Predictions**
-* **Average Intercept Time Error**
+**Dataset schema** (`data`: (N,5) float32 = `[ToA_us, Freq_MHz, PW_us,
+AoA_deg, Amp_dB]`; `labels`: (N,1) int8 = ground-truth per-pulse emitter
+cluster id, up to ~90-96 emitters per file).
 
-Metrics will support both:
+**Approach**: `PDWWindowDataset` randomly samples fixed-length windows
+(default 256 pulses) of consecutive ToA-sorted PDWs per file (loads each
+file's full array once — scan files are ~3-40MB, tractable), normalizes
+features (ToA→inter-pulse delta in seconds, freq/pw/aoa/amp each scaled to
+O(1)). `PDWEncoder` (Transformer, `hidden_dim=64, embed_dim=32,
+num_layers=3, num_heads=4` by default) maps each pulse in a window to a
+normalized embedding. Trained with **supervised contrastive loss**
+(`losses.py`) — pulls same-emitter pulses together, pushes different-
+emitter pulses apart, computed per-window using the ground-truth labels.
+At eval time, **DBSCAN** clusters the embeddings (matching SEDCAM's own
+SEM+CVR-DCM+DBSCAN design), scored against ground truth via ARI/V-measure/
+AMI (the challenge's own clustering metrics).
 
-1. **Online evaluation** during RL training
-2. **Offline evaluation** for algorithm comparison and experimental results
+**First trained result** (20 train files, 5 val files, 10 epochs, default
+config): loss 5.18→5.01, **val ARI/V-measure/AMI all converged to ~0.74**,
+plateauing after epoch ~6. Checkpoints:
+`model/deinterleaving/checkpoints/encoder_epoch{1..10}.pt`.
 
----
+**To do**: scale to more files/epochs, sweep `dbscan_eps`/`min_samples`,
+write an inference script that takes a live PDW stream and outputs
+per-emitter track assignments — this is what would let `gym_env.py` swap
+its band-indexed tracks for real emitter-indexed ones (the documented
+"known simplification").
 
-## Development Principles
-
-### 1. No hardcoded simulation defaults
-
-All tunable simulation parameters must come from configuration.
-
-### 2. Deterministic randomness
-
-Use `RNGManager.spawn_named()` for independently reproducible stochastic components.
-
-### 3. Precompute emitter schedules
-
-Emitter schedules are generated during `reset()` and subsequently accessed through deterministic lookups.
-
-### 4. Separate truth from observation
-
-The RL agent must never receive the environment's ground truth directly.
-
-```text
-Ground Truth
-     │
-     ▼
-Sensor Model
-     │
-     ▼
-Imperfect Observation
-     │
-     ▼
-RL Agent
-```
-
-### 5. Keep simulation and model independent
-
-`simulation/` must never import internals from `model/`.
-
-The model side consumes the simulation through the Gymnasium environment interface.
-
-### 6. Reproducible experiments
-
-Random seeds, configuration files, model versions, and evaluation metrics should be recorded for experiments.
+Run: `python -m model.deinterleaving.train --train-dir <scan>/train_scan
+--val-dir <scan>/test_scan [--max-train-files N] [--max-val-files N]`.
 
 ---
 
-## Technology Stack
+## 7. RL scheduler (`model/agents/`) — trained, first version
 
-| Area                   | Technology                  |
-| ---------------------- | --------------------------- |
-| Language               | Python, C++                 |
-| Deep Learning          | PyTorch, TensorFlow         |
-| Reinforcement Learning | Stable-Baselines3           |
-| Environment            | Gymnasium                   |
-| Signal Processing      | MS-UNet1D, SEDCAM           |
-| Database               | PostgreSQL, Redis, InfluxDB |
-| Backend                | REST API                    |
-| Visualization          | Plotly, Matplotlib          |
-| GUI                    | Qt                          |
-| Deployment             | Docker, Nginx               |
-| Version Control        | Git / GitHub                |
+`train_ppo.py` trains **PPO** (Stable-Baselines3, `MultiInputPolicy` for
+the Dict observation space) directly against `AlterraEnv` — nothing
+model-specific about the env, it's the same one `alterra env preview`
+uses with a random policy. `evaluate.py` runs a trained checkpoint through
+the same `MetricsTracker` as the CLI's `env metrics`, for apples-to-apples
+comparison against the random baseline.
 
----
+**Training runs so far**:
+1. Smoke test, 20k timesteps, 2 envs — confirmed the loop works
+   end-to-end; policy still near-random (entropy_loss barely moved).
+2. Real run, 500k timesteps, 4 envs, GPU — `ep_rew_mean` climbed from
+   ~0.5 to ~130-144, `explained_variance` up to 0.77-0.87, entropy_loss
+   down from -6.23 to ~-5.3 (policy sharpening).
 
-## Development Roadmap
+**Result — PPO (500k) vs. random-policy baseline**, both evaluated over
+20 episodes / 200 steps via `MetricsTracker`:
 
-```text
-                    ┌────────────────────┐
-                    │ 1. Requirements    │
-                    └─────────┬──────────┘
-                              │
-                              ▼
-                    ┌────────────────────┐
-                    │ 2. Simulation      │
-                    │    & Data Gen      │
-                    └─────────┬──────────┘
-                              │
-                              ▼
-                    ┌────────────────────┐
-                    │ 3. Signal          │
-                    │    Processing      │
-                    └─────────┬──────────┘
-                              │
-                              ▼
-                    ┌────────────────────┐
-                    │ 4. AI Models      │
-                    │ CAROTA / DQN / PPO│
-                    └─────────┬──────────┘
-                              │
-                              ▼
-                    ┌────────────────────┐
-                    │ 5. Integration     │
-                    │    & Testing       │
-                    └─────────┬──────────┘
-                              │
-                              ▼
-                    ┌────────────────────┐
-                    │ 6. Deployment      │
-                    │    & Monitoring    │
-                    └────────────────────┘
-```
+| Metric | Random | PPO (500k) |
+|---|---|---|
+| Avg intercept rate | ~0.226–0.297 | **1.477** (~5.7×) |
+| Avg reward | ~0.152–0.224 | **2.355** (~12×) |
+| Avg intercept time error (slots) | ~459–467 | **272.3** (better) |
+| Pd | 1.000 | 0.550 |
+| Pfa | ~0.021–0.026 | 0.019 |
+| Percent correct | ~0.975–0.980 | 0.983 |
 
----
+PPO clearly learned to revisit active bands far more often and finds
+emitters faster (intercept rate, avg reward, intercept time error all
+improved substantially). **The Pd drop is not a regression**: Pd is
+measured only over bands PPO actually dwelled on while occupied. A random
+policy's rare occupied-dwells landed almost entirely on the easy,
+high-SNR, high-duty-cycle fixed/periodic emitters. PPO now also chases
+weaker agile emitters, pulling more low-SNR encounters into the Pd
+denominator even though total hits are up substantially — `sensitivity ==
+Pd` here is consistent with that read (most occupied encounters now fall
+in the low-SNR bucket used to define `sensitivity`).
 
-## Research Goal
+**`train_ppo.py` now supports** (added for the "fully train" pass):
+periodic checkpointing (`CheckpointCallback`, default every 100k
+timesteps), held-out evaluation during training with best-model saving
+(`EvalCallback`, default every 50k timesteps, 10 eval episodes,
+`best_model.zip` saved separately from the final checkpoint), and
+`--resume-from` to continue training from a saved checkpoint.
 
-The central research question is:
+**To do**:
+- Full training run in progress/planned at 2M timesteps — evaluate
+  `checkpoints/best/best_model.zip` (not necessarily the final save) once
+  done.
+- Per-emitter-kind breakdown of hits (is PPO neglecting the
+  periodic-scan emitter for easier agile ones?) — not yet measured.
+- CARDA and Double DQN baselines still not trained — needed for the
+  paper's three-way comparison (CARDA heuristic baseline / Double DQN RL
+  baseline / PPO proposed, per the architecture diagram).
+- No IG/uncertainty term in the reward yet (see section 3 open item).
 
-> **Can an adaptive machine-learning receiver scheduler intercept dynamic and frequency-agile emitters more quickly and reliably than conventional scanning strategies?**
-
-The experimental evaluation will compare CAROTA, Double DQN, and PPO under identical simulated RF scenarios.
-
-Particular attention will be given to:
-
-* Periodic scanning behavior
-* Frequency agility
-* Threat prioritization
-* Sensor uncertainty
-* Missed detections
-* False alarms
-* Receiver scanning constraints
+Run: `python -m model.agents.train_ppo --timesteps N [--n-envs N]
+[--resume-from PATH]` then `python -m model.agents.evaluate --model PATH
+--episodes N --steps-per-episode N`.
 
 ---
 
-## Project Context
+## 8. CLI reference (`interfaces/cli/main.py`, entry point `alterra`)
 
-For detailed architectural decisions, implementation constraints, simulation assumptions, and development status, see:
+alterra emitters preview [--config PATH] [--episode-length N]
+alterra scenario preview [--config PATH] --scenario PATH [--episode-length N]
+alterra env check [--config PATH]
+alterra env preview [--config PATH] [--scenario PATH] [--steps N]
+alterra env metrics [--config PATH] [--scenario PATH] [--episodes N] [--steps-per-episode N]
+alterra env plot [--config PATH] [--scenario PATH] [--steps N] [--out PATH]
+alterra pdw preview [--config PATH] [--scenario PATH] [--episode-length N] [--limit N]
+alterra pdw export [--config PATH] [--scenario PATH] [--episode-length N] [--out PATH]
 
-```text
-docs/PROJECT_CONTEXT.md
-```
-
-This document is intended to remain the project's single source of truth for architectural context.
+Model-side training/eval is invoked directly as Python modules (not yet
+wired into the `alterra` CLI): `python -m model.deinterleaving.train ...`,
+`python -m model.agents.train_ppo ...`, `python -m model.agents.evaluate ...`.
 
 ---
 
-## Team
+## 9. Status: done / to-do
 
-**Alterra**
-Smart India Hackathon 2026
-DRDO Problem Statement 26055
+**Done**: full simulation stack (section 5); first trained deinterleaving
+encoder (~0.74 ARI/V-measure/AMI, section 6); first trained PPO scheduler
+with a clear, validated improvement over random (section 7); confirmed the
+gym env's design matches the team's own workflow diagram exactly.
 
-### Responsibilities
+**To do, roughly in order**:
+1. Full 2M-timestep PPO training run, evaluate the eval-selected best
+   checkpoint.
+2. CARDA (heuristic baseline) and Double DQN implementations, for the
+   three-way comparison the paper needs.
+3. Deinterleaving inference script + wiring real per-emitter tracks into
+   `gym_env.py` (replacing the band-indexed simplification).
+4. Decide raw IQ synthesis vs. training MS-UNet1D directly on ground-truth
+   PDWs (still-open item from the PDW export batch).
+5. Possible IG/uncertainty reward term once DSCAC/CAROTA exists.
+6. `tests/` — still nothing written.
+7. `interfaces/web/` and the Qt/GUI deployment layer — explicitly
+   deferred until 1-4 above are solid.
 
-* **Simulation / Environment:** Vishy
-* **Perception / Deinterleaving / RL:** Team member
+---
 
-The ownership boundary is intentionally maintained so that the simulation and ML pipeline can be developed and tested independently.
+## 10. Conventions for anyone (or any LLM) contributing
 
+- **No hardcoded numeric defaults** in `simulation/` — everything from
+  `configs/*.yaml` via `AlterraConfig`, sampled through a named RNG stream.
+- **`simulation/` and `model/` never import each other's internals.**
+- **Emitter schedules precomputed in `reset()`**, never lazily in
+  `state_at(t)`.
+- **RNG streams via `RNGManager.spawn_named(<stable-id>)`.**
+- **YAML numerics**: no underscore separators; explicit casts in
+  `config_loader.py` for new fields.
+- **Ground-truth fields** (`true_emitter_id`, `true_threat_level`,
+  `true_occupied`, PDW `emitter_id`) are evaluation/metrics/training-only —
+  never surfaced in `AlterraEnv`'s observation space.
+- File delivery convention: `cat > path << 'EOF' ... EOF` bash heredoc
+  blocks (with `mkdir -p` where needed), run/test commands given
+  separately from the code block.
+
+  
+---
+
+## 11. PPO debugging postmortem (resolved)
+
+Three successive training runs converged to a small fixed set of
+`(band, dwell)` actions regardless of per-episode truth, despite fixing
+the reward's info-gain incentive and widening the policy network. Root
+cause: `_apply_dwell_to_tracks` only updated `band_tracks` on a **hit** —
+a miss left that band's observation completely unchanged, so the agent
+could never distinguish "just checked, empty" from "never checked."
+Almost the entire observation was structurally uninformative; no reward
+or network fix could work around that.
+
+**Fix**: `band_tracks` now carries visit state independently of hit state
+(`TRACK_FEATURE_DIM` 4→6: `[threat_norm, confidence, time_since_hit,
+ever_hit, time_since_visit, ever_visited]`) — every dwell updates the
+visit fields regardless of outcome. Observation shape changed
+(128×4→128×6); old checkpoints are structurally incompatible, retrained
+from scratch as `model/agents/checkpoints/visit_fix_v1/`.
+
+**Result** (2M timesteps, ent_coef=0.02, net_arch=[256,256], vs. random
+baseline, both over 20 episodes / 200 steps):
+
+| Metric | Random | visit_fix_v1 (deterministic) |
+|---|---|---|
+| Avg intercept rate | ~0.226–0.297 | **0.642** |
+| Avg intercept time error (slots) | ~459–467 | **323.8** |
+| Pd | 1.000 | 0.850 |
+| Percent correct | ~0.975–0.980 | 0.982 |
+
+`inspect_policy` confirms qualitative fix: 14-21 unique actions per
+200-step episode (was 2-5, byte-identical across episodes), leading
+action changes per episode (44→40→94 across 3 test episodes) — this is a
+policy reading per-episode state, not executing a memorized schedule.
+Deterministic reward std (118 on mean 86) reflects genuine episode-to-
+episode emitter-population variance (8-15 emitters, randomized), not
+policy inconsistency.
+
+**Considered good enough to move forward with.** Lessons for future
+debugging: when a policy collapses to a fixed action set independent of
+environment state, check the *observation* for missing/asymmetric signal
+before tuning reward shape or network size — both are dead ends if the
+agent structurally cannot perceive the thing it needs to react to.
+
+**Still open**: CARDA/Double DQN baselines for the paper's three-way
+comparison; deinterleaving inference wiring into real per-emitter tracks
+(would let `band_tracks` become emitter-tracks); IG/uncertainty reward
+term from DSCAC/CAROTA; the `periodic_scan` edge-sampling bias noted
+during debugging (middle bands statistically over-covered vs. edges) —
+left as-is, plausibly a legitimate modeling choice rather than a bug.
+
+
+---
+
+## 12. Qt GUI (`interfaces/qt_gui/`) — batch 1+2 done
+
+C++ Qt6 desktop app embedding the Python interpreter directly (pybind11
+`scoped_interpreter`) — calls the real `AlterraEnv` + trained PPO
+checkpoint live, no reimplementation. `PythonBridge` owns the interpreter
+and exposes `reset`/`step`/`currentMetrics`/`truthMatrix`.
+`SpectrogramWidget` renders the ground-truth occupancy matrix with the
+receiver's actual dwell path overlaid in red and a live time cursor — same
+visualization as `simulation/viz/spectrogram_plot.py`, live instead of a
+saved PNG. Seed field + Reset Episode lets a specific scenario be pinned
+for reliable demos instead of gambling on a random one live.
+
+**Known-good demo seed**: 42 (intercept rate 0.756, Pd 1.0). Pre-test a
+few seeds before any live demo and keep 2-3 good ones on hand — performance
+varies a lot by episode (randomized 8-15 emitter population), same as the
+scheduler's own eval variance documented in section 11.
+
+**Build gotcha (fixed)**: Python 3.14's `PyType_Spec` has a `slots` struct
+field; Qt's `slots`/`signals`/`emit` macros collide with it once pybind11
+headers are included. Fixed via `QT_NO_KEYWORDS` (use `Q_SLOTS` instead of
+`slots` in Qt class declarations) plus a `#pragma push_macro/pop_macro`
+guard around the pybind11 includes in `PythonBridge.h` for translation
+units that don't set that flag.
