@@ -74,23 +74,125 @@ Alterra solves this by pairing a high-fidelity RF spectrum simulator with a **Pr
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Complete Setup Guide (macOS & Linux)
 
-### 1. Environment Setup
+### 🍏 macOS Setup
 
+#### 1. Install System Prerequisites
+Open Terminal and install build essentials, CMake, Qt 6, and Python 3.13 via Homebrew:
 ```bash
-# Clone repository
+# Install Xcode Command Line Tools
+xcode-select --install
+
+# Install Homebrew (if not already installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install CMake, Qt 6, and Python 3.13
+brew install cmake qt@6 python@3.13
+```
+
+#### 2. Clone & Setup Python Environment
+```bash
 git clone https://github.com/Vishwesh-Bhilare/Alterra.git
 cd Alterra
+git checkout setup-linux-mac
 
-# Create virtual environment
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 
-# Install Python dependencies and Alterra CLI
+pip install --upgrade pip
 pip install -r requirements.txt
 pip install -e .
 ```
+
+#### 3. Build & Launch GUI
+```bash
+# Automated 1-command build & launch:
+./run.sh --gui
+
+# Or manual CMake build:
+cmake -B interfaces/qt_gui/build -S interfaces/qt_gui \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6 2>/dev/null || brew --prefix qt);$(.venv/bin/python -m pybind11 --cmakedir)" \
+  -DPython_EXECUTABLE="$(pwd)/.venv/bin/python"
+cmake --build interfaces/qt_gui/build
+./interfaces/qt_gui/build/alterra_gui configs/default_config.yaml model/agents/checkpoints/best/best_model.zip
+```
+
+---
+
+### 🐧 Linux Setup (Ubuntu / Debian / Fedora / Arch)
+
+#### 1. Install System Prerequisites
+
+**Ubuntu / Debian / Linux Mint:**
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  cmake \
+  qt6-base-dev \
+  qt6-base-dev-tools \
+  libgl1-mesa-dev \
+  python3-dev \
+  python3-venv \
+  git
+```
+
+**Fedora / RHEL / Rocky Linux:**
+```bash
+sudo dnf install -y \
+  gcc-c++ \
+  cmake \
+  qt6-qtbase-devel \
+  mesa-libGL-devel \
+  python3-devel \
+  git
+```
+
+**Arch Linux / Manjaro:**
+```bash
+sudo pacman -S --needed \
+  base-devel \
+  cmake \
+  qt6-base \
+  python \
+  git
+```
+
+#### 2. Clone & Setup Python Environment
+```bash
+git clone https://github.com/Vishwesh-Bhilare/Alterra.git
+cd Alterra
+git checkout setup-linux-mac
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -e .
+```
+
+#### 3. Build & Launch GUI
+```bash
+# Automated 1-command build & launch:
+./run.sh --gui
+
+# Or manual CMake build:
+cmake -B interfaces/qt_gui/build -S interfaces/qt_gui \
+  -DCMAKE_PREFIX_PATH="$(.venv/bin/python -m pybind11 --cmakedir)" \
+  -DPython_EXECUTABLE="$(pwd)/.venv/bin/python"
+cmake --build interfaces/qt_gui/build
+./interfaces/qt_gui/build/alterra_gui configs/default_config.yaml model/agents/checkpoints/best/best_model.zip
+```
+
+> **Note for Headless Linux / Servers**:  
+> If running on a remote cloud instance or headless container without a display, you can run all simulations, training, and metrics headlessly using the CLI:
+> ```bash
+> alterra env check --config configs/default_config.yaml
+> ./run.sh --sim
+> ./run.sh --train-rl 200000
+> ```
 
 ### 2. Automated Pipeline Runner (`run.sh`)
 
