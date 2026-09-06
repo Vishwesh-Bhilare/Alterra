@@ -221,6 +221,14 @@ class AlterraEnv(gym.Env):
 
         return float(reward)
 
+    @property
+    def t(self) -> int:
+        return self._t
+
+    @property
+    def episode_length(self) -> int:
+        return self._episode_length
+
     def _build_observation(self) -> dict[str, np.ndarray]:
         num_bands = self.config.spectrum.num_bands
         band_tracks = np.zeros((num_bands, TRACK_FEATURE_DIM), dtype=np.float32)
