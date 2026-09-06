@@ -1,5 +1,7 @@
 #include "PythonBridge.h"
 
+#include <cstring>
+
 PythonBridge::PythonBridge(const std::string& repoRoot,
                             const std::string& configPath,
                             const std::string& modelPath) {
@@ -61,4 +63,18 @@ EpisodeMetrics PythonBridge::currentMetrics() {
     em.percentCorrect = m.attr("percent_correct").cast<double>();
     em.avgReward = m.attr("avg_reward").cast<double>();
     return em;
+}
+
+TruthMatrix PythonBridge::truthMatrix() {
+    py::object world = env_.attr("_spectrum_world");
+    py::object truthObj = world.attr("full_truth_matrix")();
+    py::array_t<uint8_t> arr = truthObj.attr("astype")("uint8").cast<py::array_t<uint8_t>>();
+    auto buf = arr.request();
+
+    TruthMatrix tm;
+    tm.numBands = static_cast<int>(buf.shape[0]);
+    tm.episodeLength = static_cast<int>(buf.shape[1]);
+    tm.data.resize(tm.numBands * tm.episodeLength);
+    std::memcpy(tm.data.data(), buf.ptr, tm.data.size());
+    return tm;
 }

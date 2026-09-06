@@ -1,8 +1,24 @@
 #pragma once
 
+// Python 3.14's PyType_Spec has a `slots` field; Qt's MOC-era headers
+// define `slots` as a macro (unless QT_NO_KEYWORDS is set). Guard pybind11
+// includes regardless of that build flag, since this header may be
+// included from translation units that don't set it.
+#ifdef slots
+#pragma push_macro("slots")
+#undef slots
+#endif
+
 #include <pybind11/embed.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+
+#ifdef slots
+#pragma pop_macro("slots")
+#endif
+
 #include <string>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -25,10 +41,12 @@ struct EpisodeMetrics {
     double avgReward = 0.0;
 };
 
-// Embeds a Python interpreter and drives the real AlterraEnv + a trained
-// PPO checkpoint directly -- no reimplementation of the simulation or the
-// model in C++. guard_ must be the first member (constructed first,
-// destroyed last).
+struct TruthMatrix {
+    int numBands = 0;
+    int episodeLength = 0;
+    std::vector<uint8_t> data;
+};
+
 class PythonBridge {
 public:
     PythonBridge(const std::string& repoRoot,
@@ -38,6 +56,7 @@ public:
     void reset(int seed);
     StepResult step();
     EpisodeMetrics currentMetrics();
+    TruthMatrix truthMatrix();
 
 private:
     py::scoped_interpreter guard_;
