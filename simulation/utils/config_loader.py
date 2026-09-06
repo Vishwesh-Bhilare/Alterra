@@ -110,6 +110,7 @@ class RewardConfig:
     staleness_penalty_coeff: float
     staleness_norm_slots: int
     novelty_bonus: float
+    hit_confirm_floor: float
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ def load_config(path: str | Path) -> AlterraConfig:
         staleness_penalty_coeff=float(reward_raw["staleness_penalty_coeff"]),
         staleness_norm_slots=int(reward_raw["staleness_norm_slots"]),
         novelty_bonus=float(reward_raw["novelty_bonus"]),
+        hit_confirm_floor=float(reward_raw["hit_confirm_floor"]),
     )
     environment = EnvironmentConfig(
         dwell_options_slots=[int(v) for v in env_raw["dwell_options_slots"]],

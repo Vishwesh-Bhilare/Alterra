@@ -69,7 +69,9 @@ environment:
     idle_cost: -0.1                         # Penalty for dwelling with no signal
     false_alarm_penalty: -0.5
     novelty_bonus: 1.0
-    staleness_penalty_coeff: 0.05           # How much to penalize old observations
+    hit_confirm_floor: 0.1                  # min fraction of hit_reward_base paid for
+                                             # re-confirming an already-tracked, fresh track
+    staleness_penalty_coeff: 0.02           # How much to penalize old observations
     staleness_norm_slots: 200               # Normalization horizon for staleness
 
 scenario:

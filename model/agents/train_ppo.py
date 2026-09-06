@@ -59,6 +59,12 @@ def main():
         model = PPO(
             "MultiInputPolicy", vec_env, verbose=1,
             tensorboard_log=args.tensorboard_log, ent_coef=args.ent_coef,
+            # Default net_arch (64x64) is too thin to learn per-band
+            # conditional value from a flattened 512-dim mostly-sparse
+            # band_tracks observation -- it was learning a coarse global
+            # prior over which band to camp on instead of reacting to
+            # per-episode state.
+            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
         )
 
     checkpoint_callback = CheckpointCallback(
