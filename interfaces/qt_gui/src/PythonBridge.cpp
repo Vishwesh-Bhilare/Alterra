@@ -28,7 +28,11 @@ PythonBridge::PythonBridge(const std::string& repoRoot,
     py::module_ envModule = py::module_::import("simulation.environment");
     env_ = envModule.attr("AlterraEnv")(config_);
 
-    py::module_ rnnPolicy = py::module_::import("model.agents.rnn_policy");
+    try {
+        py::module_::import("model.agents.rnn_policy");
+    } catch (const py::error_already_set&) {
+        // Graceful fallback if switching to branches without RNN policy
+    }
     py::module_ sb3 = py::module_::import("stable_baselines3");
     model_ = sb3.attr("PPO").attr("load")(modelPath);
 
