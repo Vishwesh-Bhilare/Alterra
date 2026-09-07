@@ -28,6 +28,12 @@ PythonBridge::PythonBridge(const std::string& repoRoot,
     py::module_ envModule = py::module_::import("simulation.environment");
     env_ = envModule.attr("AlterraEnv")(config_);
 
+    try {
+        py::module_::import("model.agents.gru_policy");
+    } catch (const py::error_already_set&) {
+        // Graceful fallback if module not present
+    }
+
     py::module_ sb3 = py::module_::import("stable_baselines3");
     model_ = sb3.attr("PPO").attr("load")(modelPath);
 
@@ -42,23 +48,27 @@ void PythonBridge::reset(int seed) {
     obs_ = result[0];
     tracker_ = metricsModule_.attr("MetricsTracker")();
     lastHit_ = false;
+    currentBand_ = env_.attr("_current_band").cast<int>();
+    sweepDir_ = (currentBand_ > 64) ? -1 : 1;
 }
 
 StepResult PythonBridge::step() {
-    static std::mt19937 rng{std::random_device{}()};
-
-    py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = false);
+    py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
     py::sequence predSeq = prediction[0].cast<py::sequence>();
     int dwellIdx = predSeq[1].cast<int>();
 
-    int dir = 1; // Default to STAY (index 1 is delta=0 in [-1, 0, 1])
+    int dir = 1; // 0: delta=-1 (down), 1: delta=0 (stay), 2: delta=+1 (up)
     if (lastHit_) {
-        // Intercepted active radio signal: lock and stay on this exact frequency band!
-        dir = 1; // delta = 0 (STAY)
+        // Intercepted active radio signal: lock and stay on this exact frequency band
+        dir = 1;
     } else {
-        // Signal lost or searching: randomly pick +1 (index 2) or -1 (index 0)
-        std::uniform_int_distribution<int> dist(0, 1);
-        dir = (dist(rng) == 0) ? 0 : 2;
+        // Continuous triangular spectrum sweep with clean boundary reversal
+        if (currentBand_ <= 0) {
+            sweepDir_ = 1; // reverse upward
+        } else if (currentBand_ >= 127) {
+            sweepDir_ = -1; // reverse downward
+        }
+        dir = (sweepDir_ == -1) ? 0 : 2;
     }
 
     py::list actList;
@@ -85,7 +95,7 @@ StepResult PythonBridge::step() {
     r.truncated = truncated;
     r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
 
-    // Update lock state: if hit, stay locked; if miss, signal is lost -> search next step
+    currentBand_ = r.band;
     lastHit_ = r.hit;
 
     return r;

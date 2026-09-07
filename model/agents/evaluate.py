@@ -5,10 +5,23 @@ the mean) so variance is visible.
 """
 from __future__ import annotations
 
+import os
+import sys
+
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_venv_dir = os.path.join(_repo_root, ".venv")
+_venv_python = os.path.join(_venv_dir, "bin", "python")
+if os.path.exists(_venv_python) and sys.prefix != _venv_dir:
+    os.execv(_venv_python, [_venv_python, "-m", "model.agents.evaluate"] + sys.argv[1:])
+
 import argparse
 
 import numpy as np
 from stable_baselines3 import PPO
+
+from model.agents.gru_policy import PPOGRUExtractor
+
+__all__ = ["PPOGRUExtractor"]
 
 from simulation.environment import AlterraEnv
 from simulation.metrics import MetricsTracker
@@ -23,7 +36,8 @@ def run(model, env, episodes, steps_per_episode, deterministic, base_seed):
         tracker = MetricsTracker()
         ep_reward = 0.0
         for _ in range(steps_per_episode):
-            action, _ = model.predict(obs, deterministic=deterministic)
+            model_obs = {k: v for k, v in obs.items() if k in model.observation_space.spaces}
+            action, _ = model.predict(model_obs, deterministic=deterministic)
             obs, reward, terminated, truncated, info = env.step(action)
             tracker.record_step(env.last_dwell_result, reward)
             ep_reward += reward

@@ -126,6 +126,8 @@ class EnvironmentConfig:
     reward: RewardConfig
     action_mode: str = "relative"
     relative_step_sizes: list[int] = field(default_factory=lambda: [-1, 0, 1])
+    history_length: int = 16
+    gru_hidden_dim: int = 64
 
 
 @dataclass(frozen=True)
@@ -240,6 +242,8 @@ def load_config(path: str | Path) -> AlterraConfig:
         reward=reward,
         action_mode=str(env_raw.get("action_mode", "relative")),
         relative_step_sizes=[int(v) for v in env_raw.get("relative_step_sizes", [-1, 0, 1])],
+        history_length=int(env_raw.get("history_length", 16)),
+        gru_hidden_dim=int(env_raw.get("gru_hidden_dim", 64)),
     )
 
     scenario_raw = raw.get("scenario", {})

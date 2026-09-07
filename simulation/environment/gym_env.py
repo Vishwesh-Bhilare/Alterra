@@ -61,6 +61,8 @@ class AlterraEnv(gym.Env):
         self._action_mode = getattr(config.environment, "action_mode", "relative")
         self._step_sizes = getattr(config.environment, "relative_step_sizes", [-1, 0, 1])
 
+        self._history_length = getattr(config.environment, "history_length", 16)
+
         if self._action_mode == "relative":
             self.action_space = spaces.MultiDiscrete([len(self._step_sizes), len(self._dwell_options)])
         else:
@@ -74,8 +76,13 @@ class AlterraEnv(gym.Env):
                 "receiver": spaces.Box(
                     low=0.0, high=1.0, shape=(RECEIVER_FEATURE_DIM,), dtype=np.float32
                 ),
+                "hit_miss_seq": spaces.Box(
+                    low=0.0, high=1.0, shape=(self._history_length, 5), dtype=np.float32
+                ),
             }
         )
+
+        self._hit_miss_buffer = np.zeros((self._history_length, 5), dtype=np.float32)
 
         self._episode_length = config.timing.episode_length_slots
 
@@ -150,6 +157,7 @@ class AlterraEnv(gym.Env):
         self._prev_had_hit = False
         self._prev_action_direction_norm = 0.5
         self._last_measured_power_norm = 0.0
+        self._hit_miss_buffer = np.zeros((self._history_length, 5), dtype=np.float32)
         self.last_dwell_result = None
 
         return self._build_observation(), {}
@@ -198,6 +206,15 @@ class AlterraEnv(gym.Env):
         self._apply_dwell_to_tracks(band, dwell_result)
         self._prev_had_hit = hit
         self._last_measured_power_norm = self._normalize_power(dwell_result.mean_measured_power_dbm)
+
+        hit_val = 1.0 if hit else 0.0
+        miss_val = 0.0 if hit else 1.0
+        band_norm = float(band) / max(num_bands - 1, 1)
+        dwell_norm = float(dwell_slots) / max(max(self._dwell_options), 1)
+        power_norm = float(self._last_measured_power_norm)
+
+        self._hit_miss_buffer = np.roll(self._hit_miss_buffer, -1, axis=0)
+        self._hit_miss_buffer[-1] = [hit_val, miss_val, band_norm, dwell_norm, power_norm]
 
         terminated = False
         truncated = self._t >= self._episode_length
@@ -319,4 +336,8 @@ class AlterraEnv(gym.Env):
             ],
             dtype=np.float32,
         )
-        return {"band_tracks": band_tracks, "receiver": receiver_features}
+        return {
+            "band_tracks": band_tracks,
+            "receiver": receiver_features,
+            "hit_miss_seq": self._hit_miss_buffer.copy(),
+        }
