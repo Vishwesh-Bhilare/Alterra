@@ -226,10 +226,20 @@ main() {
             log_step "Launching Alterra C++ Qt GUI..."
             if [[ ! -f "interfaces/qt_gui/build/alterra_gui" ]]; then
                 log_info "Building alterra_gui binary with cmake..."
-                local qt_prefix
-                qt_prefix="$(brew --prefix qt@6 2>/dev/null || brew --prefix qt 2>/dev/null || brew --prefix qtbase 2>/dev/null || echo '/opt/homebrew/opt/qtbase')"
+                local cmake_prefix=""
+                local pybind_dir
+                pybind_dir="$(.venv/bin/python -m pybind11 --cmakedir 2>/dev/null || true)"
+
+                if [[ "$OSTYPE" == "darwin"* ]]; then
+                    local qt_prefix
+                    qt_prefix="$(brew --prefix qt@6 2>/dev/null || brew --prefix qt 2>/dev/null || brew --prefix qtbase 2>/dev/null || echo '/opt/homebrew/opt/qtbase')"
+                    cmake_prefix="${qt_prefix};${pybind_dir}"
+                else
+                    cmake_prefix="${pybind_dir}"
+                fi
+
                 cmake -B interfaces/qt_gui/build -S interfaces/qt_gui \
-                    -DCMAKE_PREFIX_PATH="$qt_prefix;$(.venv/bin/python -m pybind11 --cmakedir)" \
+                    -DCMAKE_PREFIX_PATH="$cmake_prefix" \
                     -DPython_EXECUTABLE="$(pwd)/.venv/bin/python"
                 cmake --build interfaces/qt_gui/build
             fi
