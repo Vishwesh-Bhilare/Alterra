@@ -67,14 +67,18 @@ environment:
   action_mode: "relative"                 # "relative" ([-1, 0, +1]) or "absolute"
   relative_step_sizes: [-1, 0, 1]         # Down, Stay, Up
   dwell_options_slots: [3, 5, 8, 12]
+  history_length: 16
+  transformer_d_model: 64
+  transformer_nhead: 4
+  transformer_num_layers: 2
   reward:
     hit_reward_base: 10.0
     threat_weight_levels: [1, 2, 3]
     threat_weight_values: [1.0, 2.0, 4.0]   # Threat level multipliers
     tracking_reward: 6.0                    # Bonus for staying on an active emitter
     signal_lost_penalty: -0.8               # Penalty for dwelling on band after signal ended
-    empty_stay_penalty: -0.4                # Penalty for staying on an empty band (encourages scanning)
-    boundary_penalty: -0.2                  # Penalty for trying to step beyond spectrum boundary
+    empty_stay_penalty: -0.8                # Penalty for staying on an empty band (encourages scanning)
+    boundary_penalty: -2.0                  # Penalty for trying to step beyond spectrum boundary
     idle_cost: -0.1                         # Penalty for dwelling with no signal
     false_alarm_penalty: -0.5
     novelty_bonus: 1.0

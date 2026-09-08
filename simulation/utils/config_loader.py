@@ -126,6 +126,10 @@ class EnvironmentConfig:
     reward: RewardConfig
     action_mode: str = "relative"
     relative_step_sizes: list[int] = field(default_factory=lambda: [-1, 0, 1])
+    history_length: int = 16
+    transformer_d_model: int = 64
+    transformer_nhead: int = 4
+    transformer_num_layers: int = 2
 
 
 @dataclass(frozen=True)
@@ -240,6 +244,10 @@ def load_config(path: str | Path) -> AlterraConfig:
         reward=reward,
         action_mode=str(env_raw.get("action_mode", "relative")),
         relative_step_sizes=[int(v) for v in env_raw.get("relative_step_sizes", [-1, 0, 1])],
+        history_length=int(env_raw.get("history_length", 16)),
+        transformer_d_model=int(env_raw.get("transformer_d_model", 64)),
+        transformer_nhead=int(env_raw.get("transformer_nhead", 4)),
+        transformer_num_layers=int(env_raw.get("transformer_num_layers", 2)),
     )
 
     scenario_raw = raw.get("scenario", {})

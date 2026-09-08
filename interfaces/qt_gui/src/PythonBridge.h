@@ -64,4 +64,6 @@ private:
     py::object tracker_;
     py::object obs_;
     bool lastHit_ = false;
+    int sweepDir_ = -1;
+    int currentBand_ = 0;
 };
