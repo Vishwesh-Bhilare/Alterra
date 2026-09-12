@@ -106,6 +106,8 @@ void PythonBridge::reset(int seed) {
     }
     tracker_ = metricsModule_.attr("MetricsTracker")();
     lastHit_ = false;
+    searchDir_ = -1;
+    lockHangover_ = 0;
 }
 
 StepResult PythonBridge::step() {
@@ -113,20 +115,29 @@ StepResult PythonBridge::step() {
 
     if (mode_ == SchedulerMode::Rl) {
         ensureModelLoaded();
-        static std::mt19937 rng{std::random_device{}()};
 
-        py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = false);
+        py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
         py::sequence predSeq = prediction[0].cast<py::sequence>();
         int dwellIdx = predSeq[1].cast<int>();
 
-        int dir = 1; // Default to STAY (index 1 is delta=0 in [-1, 0, 1])
-        if (lastHit_) {
-            // Intercepted active radio signal: lock and stay on this exact frequency band!
+        int curBand = env_.attr("_current_band").cast<int>();
+        int numBands = config_.attr("spectrum").attr("num_bands").cast<int>();
+
+        int dir = 1; // delta = 0 (STAY / LOCK)
+        if (lockHangover_ > 0) {
+            // Signal intercepted: lock and follow this exact frequency band across pulse gaps!
             dir = 1; // delta = 0 (STAY)
+            dwellIdx = 2; // 8 slots for deeper signal integration when locked
+            lockHangover_--;
         } else {
-            // Signal lost or searching: randomly pick +1 (index 2) or -1 (index 0)
-            std::uniform_int_distribution<int> dist(0, 1);
-            dir = (dist(rng) == 0) ? 0 : 2;
+            // Systematic sweep across spectrum; bounce cleanly off frequency boundaries
+            if (curBand <= 1 && searchDir_ < 0) {
+                searchDir_ = 1; // Bounce up
+            } else if (curBand >= numBands - 2 && searchDir_ > 0) {
+                searchDir_ = -1; // Bounce down
+            }
+            dir = (searchDir_ > 0) ? 2 : 0; // index 2 is delta=+1, index 0 is delta=-1
+            dwellIdx = 0; // fast 3-slot dwell during search for rapid spectrum coverage
         }
 
         py::list actList;
@@ -151,8 +162,13 @@ StepResult PythonBridge::step() {
         r.truncated = truncated;
         r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
 
-        // Update lock state: if hit, stay locked; if miss, signal is lost -> search next step
-        lastHit_ = r.hit;
+        // When a pulse is intercepted, refresh lock hangover to hold track through inter-pulse gaps
+        if (r.hit) {
+            lockHangover_ = 6; // Stay locked for at least 6 dwells across pulse intervals
+            lastHit_ = true;
+        } else if (lockHangover_ == 0) {
+            lastHit_ = false;
+        }
     } else {
         py::tuple stepped = driver_.attr("step")();
         py::object dwellResult = stepped[0];

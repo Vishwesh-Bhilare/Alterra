@@ -112,4 +112,6 @@ private:
     bool modelLoaded_ = false;
     SchedulerMode mode_ = SchedulerMode::TraditionalSequential;
     bool lastHit_ = false;
+    int searchDir_ = -1;
+    int lockHangover_ = 0;
 };
