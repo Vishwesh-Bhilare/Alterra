@@ -53,6 +53,9 @@ std::string PythonBridge::modeToTraditionalString(SchedulerMode mode) {
 void PythonBridge::ensureModelLoaded() {
     if (modelLoaded_) return;
     try {
+        try {
+            py::module_::import("model.agents.lstm_policy");
+        } catch (const py::error_already_set&) {}
         py::module_ sb3 = py::module_::import("stable_baselines3");
         model_ = sb3.attr("PPO").attr("load")(modelPath_);
         modelLoaded_ = true;
