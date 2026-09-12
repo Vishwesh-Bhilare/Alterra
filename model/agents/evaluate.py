@@ -12,7 +12,7 @@ from stable_baselines3 import PPO
 
 from simulation.environment import AlterraEnv
 from simulation.metrics import MetricsTracker
-from simulation.utils.config_loader import load_config
+from simulation.utils.config_loader import apply_overrides, load_config
 
 
 def run(model, env, episodes, steps_per_episode, deterministic, base_seed):
@@ -61,9 +61,16 @@ def main():
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--steps-per-episode", type=int, default=200)
     parser.add_argument("--base-seed", type=int, default=None)
+    parser.add_argument("--num-emitters", type=int, default=None, help="Override exact emitter count")
+    parser.add_argument("--episode-length", type=int, default=None, help="Override episode length in slots")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    config = apply_overrides(
+        config,
+        num_emitters=args.num_emitters,
+        episode_length_slots=args.episode_length,
+    )
     base_seed = args.base_seed if args.base_seed is not None else config.rng_seed
     env = AlterraEnv(config)
     model = PPO.load(args.model)
