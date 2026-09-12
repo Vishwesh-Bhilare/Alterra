@@ -106,10 +106,10 @@ private:
     py::object driver_;    // TraditionalScanDriver, only valid when mode_ != Rl
     py::object tracker_;
     py::object obs_;
-
     std::string repoRoot_;
     std::string configPath_;
     std::string modelPath_;
     bool modelLoaded_ = false;
     SchedulerMode mode_ = SchedulerMode::TraditionalSequential;
+    bool lastHit_ = false;
 };

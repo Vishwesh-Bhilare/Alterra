@@ -31,7 +31,7 @@ from simulation.utils.config_loader import AlterraConfig
 from simulation.utils.rng import RNGManager
 
 TRACK_FEATURE_DIM = 7  # [threat_norm, confidence, time_since_hit, ever_hit, time_since_visit, ever_visited, last_power_norm]
-RECEIVER_FEATURE_DIM = 2
+RECEIVER_FEATURE_DIM = 8  # [band_norm, time_norm, last_hit, consec_hits_norm, can_down, can_up, last_power, prev_dir]
 
 
 @dataclass
@@ -58,7 +58,14 @@ class AlterraEnv(gym.Env):
 
         num_bands = config.spectrum.num_bands
         self._dwell_options = config.environment.dwell_options_slots
-        self.action_space = spaces.MultiDiscrete([num_bands, len(self._dwell_options)])
+        self._action_mode = getattr(config.environment, "action_mode", "relative")
+        self._step_sizes = getattr(config.environment, "relative_step_sizes", [-1, 0, 1])
+
+        if self._action_mode == "relative":
+            self.action_space = spaces.MultiDiscrete([len(self._step_sizes), len(self._dwell_options)])
+        else:
+            self.action_space = spaces.MultiDiscrete([num_bands, len(self._dwell_options)])
+
         self.observation_space = spaces.Dict(
             {
                 "band_tracks": spaces.Box(
@@ -85,6 +92,11 @@ class AlterraEnv(gym.Env):
         self._visited_bands: set[int] = set()
         self._t = 0
         self._last_band = 0
+        self._current_band = 0
+        self._consecutive_hits = 0
+        self._prev_had_hit = False
+        self._prev_action_direction_norm = 0.5
+        self._last_measured_power_norm = 0.0
         self.last_dwell_result: DwellResult | None = None
 
     @property
@@ -132,23 +144,60 @@ class AlterraEnv(gym.Env):
         self._tracks = {}
         self._visited_bands = set()
         self._t = 0
-        self._last_band = 0
+        self._current_band = int(episode_seed_rng.integers(0, self.config.spectrum.num_bands))
+        self._last_band = self._current_band
+        self._consecutive_hits = 0
+        self._prev_had_hit = False
+        self._prev_action_direction_norm = 0.5
+        self._last_measured_power_norm = 0.0
         self.last_dwell_result = None
 
         return self._build_observation(), {}
 
     def step(self, action):
         assert self._receiver is not None, "call reset() before step()"
-        band = int(action[0])
+        num_bands = self.config.spectrum.num_bands
+
+        if self._action_mode == "relative":
+            direction_idx = int(action[0])
+            delta = self._step_sizes[direction_idx]
+            target_band = self._current_band + delta
+            if target_band < 0:
+                band = min(1, num_bands - 1)
+                delta = band - self._current_band
+                hit_boundary = True
+            elif target_band >= num_bands:
+                band = max(num_bands - 2, 0)
+                delta = band - self._current_band
+                hit_boundary = True
+            else:
+                band = target_band
+                hit_boundary = False
+            self._prev_action_direction_norm = float(direction_idx) / max(len(self._step_sizes) - 1, 1)
+        else:
+            band = int(action[0])
+            delta = band - self._current_band
+            hit_boundary = False
+            self._prev_action_direction_norm = 0.5
+
         dwell_slots = self._dwell_options[int(action[1])]
 
         dwell_result = self._receiver.dwell(band, self._t, dwell_slots)
         self.last_dwell_result = dwell_result
         self._t = dwell_result.end_t
-        self._last_band = band
+        self._last_band = self._current_band
+        self._current_band = band
 
-        reward = self._compute_reward(dwell_result)
+        hit = dwell_result.any_hit
+        if hit:
+            self._consecutive_hits += 1
+        else:
+            self._consecutive_hits = 0
+
+        reward = self._compute_reward(dwell_result, delta, hit_boundary)
         self._apply_dwell_to_tracks(band, dwell_result)
+        self._prev_had_hit = hit
+        self._last_measured_power_norm = self._normalize_power(dwell_result.mean_measured_power_dbm)
 
         terminated = False
         truncated = self._t >= self._episode_length
@@ -158,6 +207,8 @@ class AlterraEnv(gym.Env):
             "any_false_alarm": dwell_result.any_false_alarm,
             "band": band,
             "dwell_slots": dwell_slots,
+            "delta": delta,
+            "consecutive_hits": self._consecutive_hits,
         }
         return observation, reward, terminated, truncated, info
 
@@ -167,8 +218,6 @@ class AlterraEnv(gym.Env):
         return float(np.clip((power_dbm - lo) / (hi - lo), 0.0, 1.0))
 
     def _apply_dwell_to_tracks(self, band: int, dwell_result: DwellResult) -> None:
-        # Every dwell updates visit + measured-power state, regardless of
-        # outcome -- a miss is still information.
         track = self._tracks.setdefault(band, _BandTrack())
         track.ever_visited = True
         track.last_visited_t = self._t
@@ -182,7 +231,7 @@ class AlterraEnv(gym.Env):
         track.last_hit_t = self._t
         track.ever_hit = True
 
-    def _compute_reward(self, dwell_result: DwellResult) -> float:
+    def _compute_reward(self, dwell_result: DwellResult, delta: int, hit_boundary: bool) -> float:
         reward_cfg = self.config.environment.reward
         reward = 0.0
 
@@ -193,18 +242,21 @@ class AlterraEnv(gym.Env):
         best_hit = dwell_result.best_hit
         if best_hit is not None:
             weight = self._threat_weight_by_level.get(best_hit.true_threat_level, 1.0)
-            prior_track = self._tracks.get(dwell_result.band)
-            if prior_track is not None and prior_track.ever_hit and prior_track.last_hit_t is not None:
-                staleness_norm = reward_cfg.staleness_norm_slots
-                time_since_prior = max(self._t - prior_track.last_hit_t, 0.0)
-                info_gain_factor = reward_cfg.hit_confirm_floor + (
-                    1.0 - reward_cfg.hit_confirm_floor
-                ) * min(time_since_prior / staleness_norm, 1.0)
-            else:
-                info_gain_factor = 1.0
-            reward += reward_cfg.hit_reward_base * weight * info_gain_factor
+            reward += reward_cfg.hit_reward_base * weight
+            # Tracking reward for staying on active frequency
+            if delta == 0:
+                reward += getattr(reward_cfg, "tracking_reward", 6.0) * weight
         else:
             reward += reward_cfg.idle_cost
+            # Penalize staying on an empty band to strongly encourage scanning
+            if delta == 0:
+                reward += getattr(reward_cfg, "empty_stay_penalty", -0.4)
+            # Extra penalty for staying on a dead band right after signal ended
+            if delta == 0 and self._prev_had_hit:
+                reward += getattr(reward_cfg, "signal_lost_penalty", -0.8)
+
+        if hit_boundary:
+            reward += getattr(reward_cfg, "boundary_penalty", -0.2)
 
         if dwell_result.any_false_alarm:
             reward += reward_cfg.false_alarm_penalty
@@ -245,10 +297,25 @@ class AlterraEnv(gym.Env):
                 band_tracks[band, 5] = 1.0
                 band_tracks[band, 6] = track.last_measured_power_norm
 
+        current_band_norm = float(self._current_band) / max(num_bands - 1, 1)
+        time_norm = min(float(self._t) / max(self._episode_length, 1), 1.0)
+        last_hit_val = 1.0 if (self.last_dwell_result and self.last_dwell_result.any_hit) else 0.0
+        consec_hits_val = min(float(self._consecutive_hits) / 10.0, 1.0)
+        can_step_down = 1.0 if self._current_band > 0 else 0.0
+        can_step_up = 1.0 if self._current_band < num_bands - 1 else 0.0
+        last_power_val = float(self._last_measured_power_norm)
+        prev_dir_val = float(self._prev_action_direction_norm)
+
         receiver_features = np.array(
             [
-                self._last_band / max(num_bands - 1, 1),
-                min(self._t / self._episode_length, 1.0),
+                current_band_norm,
+                time_norm,
+                last_hit_val,
+                consec_hits_val,
+                can_step_down,
+                can_step_up,
+                last_power_val,
+                prev_dir_val,
             ],
             dtype=np.float32,
         )

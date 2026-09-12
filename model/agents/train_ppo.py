@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--config", default="configs/default_config.yaml")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
     parser.add_argument("--n-envs", type=int, default=os.cpu_count() or 4)
-    parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument("--ent-coef", type=float, default=0.03)
     parser.add_argument("--out", default="model/agents/checkpoints/ppo_scheduler_full.zip")
     parser.add_argument("--tensorboard-log", default="model/agents/tb_logs")
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
