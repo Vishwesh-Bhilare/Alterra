@@ -4,6 +4,7 @@ project(AlterraGui LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 find_package(pybind11 REQUIRED)
@@ -11,6 +12,7 @@ find_package(pybind11 REQUIRED)
 add_executable(alterra_gui
     src/main.cpp
     src/MainWindow.cpp
+    src/MainWindow.ui
     src/PythonBridge.cpp
     src/SpectrogramWidget.cpp
 )

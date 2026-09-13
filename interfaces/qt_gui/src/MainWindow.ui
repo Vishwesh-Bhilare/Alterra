@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1000</width>
+    <height>820</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Alterra — CORTEX Smart Scan Scheduler</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainVerticalLayout" stretch="0,0,0,0,1,1">
+    <item>
+     <widget class="QWidget" name="controlsWidget">
+      <layout class="QHBoxLayout" name="controlsLayout">
+       <item>
+        <widget class="QPushButton" name="startStopButton">
+         <property name="text">
+          <string>Start</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="stepButton">
+         <property name="text">
+          <string>Step</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="resetButton">
+         <property name="text">
+          <string>Reset Episode</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="seedLabel">
+         <property name="text">
+          <string>Seed:</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSpinBox" name="seedSpin">
+         <property name="minimum">
+          <number>0</number>
+         </property>
+         <property name="maximum">
+          <number>1000000</number>
+         </property>
+         <property name="value">
+          <number>0</number>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="randomSeedButton">
+         <property name="text">
+          <string>Random Seed</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="speedLabel">
+         <property name="text">
+          <string>Speed:</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSlider" name="speedSlider">
+         <property name="minimumSize">
+          <size>
+           <width>120</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>120</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="minimum">
+          <number>10</number>
+         </property>
+         <property name="maximum">
+          <number>300</number>
+         </property>
+         <property name="value">
+          <number>60</number>
+         </property>
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="invertedAppearance">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="configGroup">
+      <property name="title">
+       <string>Simulation Configuration (manual overrides)</string>
+      </property>
+      <layout class="QHBoxLayout" name="configLayout">
+       <item>
+        <layout class="QFormLayout" name="modeForm">
+         <item row="0" column="0">
+          <widget class="QLabel" name="schedulerLabel">
+           <property name="text">
+            <string>Scheduler:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="modeCombo">
+           <item>
+            <property name="text">
+             <string>Adaptive (RL model)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Traditional — Sequential Sweep</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Traditional — Balanced Random</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="traditionalDwellLabel">
+           <property name="text">
+            <string>Dwell (slots):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QSpinBox" name="traditionalDwellSpin">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>500</number>
+           </property>
+           <property name="value">
+            <number>8</number>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QFormLayout" name="timingForm">
+         <item row="0" column="0">
+          <widget class="QLabel" name="episodeLengthLabel">
+           <property name="text">
+            <string>Episode length (slots):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QSpinBox" name="episodeLengthSpin">
+           <property name="minimum">
+            <number>50</number>
+           </property>
+           <property name="maximum">
+            <number>200000</number>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QFormLayout" name="emittersForm">
+         <item row="0" column="0">
+          <widget class="QCheckBox" name="overrideEmittersCheck">
+           <property name="text">
+            <string>Override emitter count</string>
+           </property>
+           <property name="checked">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="exactCountLabel">
+           <property name="text">
+            <string>Exact count:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QSpinBox" name="numEmittersSpin">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>128</number>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QPushButton" name="applyConfigButton">
+         <property name="text">
+          <string>Apply &amp;&amp; Reset Episode</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="metricsLabel">
+      <property name="text">
+       <string>Pd: -   Pfa: -   Intercept rate: -   Avg reward: -</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="signalLabel">
+      <property name="text">
+       <string>Signal: -</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="SpectrogramWidget" name="spectrogram">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>200</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPlainTextEdit" name="log">
+      <property name="readOnly">
+       <bool>true</bool>
+      </property>
+      <property name="maximumBlockCount">
+       <number>500</number>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>SpectrogramWidget</class>
+   <extends>QWidget</extends>
+   <header>SpectrogramWidget.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>
