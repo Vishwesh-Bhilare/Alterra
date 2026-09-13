@@ -30,8 +30,8 @@ from simulation.environment.spectrum_world import SpectrumWorld
 from simulation.utils.config_loader import AlterraConfig
 from simulation.utils.rng import RNGManager
 
-TRACK_FEATURE_DIM = 7  # [threat_norm, confidence, time_since_hit, ever_hit, time_since_visit, ever_visited, last_power_norm]
-RECEIVER_FEATURE_DIM = 8  # [band_norm, time_norm, last_hit, consec_hits_norm, can_down, can_up, last_power, prev_dir]
+TRACK_FEATURE_DIM = 8  # [threat_norm, confidence, time_since_hit, ever_hit, time_since_visit, is_scanned, is_unscanned, last_power_norm]
+RECEIVER_FEATURE_DIM = 10  # [band_norm, time_norm, last_hit, consec_hits_norm, can_down, can_up, last_power, prev_dir, scanned_ratio, unscanned_ratio]
 
 
 @dataclass
@@ -61,6 +61,8 @@ class AlterraEnv(gym.Env):
         self._action_mode = getattr(config.environment, "action_mode", "relative")
         self._step_sizes = getattr(config.environment, "relative_step_sizes", [-1, 0, 1])
 
+        self._history_length = getattr(config.environment, "history_length", 16)
+
         if self._action_mode == "relative":
             self.action_space = spaces.MultiDiscrete([len(self._step_sizes), len(self._dwell_options)])
         else:
@@ -74,8 +76,13 @@ class AlterraEnv(gym.Env):
                 "receiver": spaces.Box(
                     low=0.0, high=1.0, shape=(RECEIVER_FEATURE_DIM,), dtype=np.float32
                 ),
+                "hit_miss_seq": spaces.Box(
+                    low=0.0, high=1.0, shape=(self._history_length, 6), dtype=np.float32
+                ),
             }
         )
+
+        self._hit_miss_buffer = np.zeros((self._history_length, 6), dtype=np.float32)
 
         self._episode_length = config.timing.episode_length_slots
 
@@ -150,6 +157,7 @@ class AlterraEnv(gym.Env):
         self._prev_had_hit = False
         self._prev_action_direction_norm = 0.5
         self._last_measured_power_norm = 0.0
+        self._hit_miss_buffer = np.zeros((self._history_length, 6), dtype=np.float32)
         self.last_dwell_result = None
 
         return self._build_observation(), {}
@@ -178,7 +186,8 @@ class AlterraEnv(gym.Env):
             band = int(action[0])
             delta = band - self._current_band
             hit_boundary = False
-            self._prev_action_direction_norm = 0.5
+            delta_norm = float(np.clip(delta / max(num_bands - 1, 1), -1.0, 1.0))
+            self._prev_action_direction_norm = delta_norm * 0.5 + 0.5
 
         dwell_slots = self._dwell_options[int(action[1])]
 
@@ -198,6 +207,16 @@ class AlterraEnv(gym.Env):
         self._apply_dwell_to_tracks(band, dwell_result)
         self._prev_had_hit = hit
         self._last_measured_power_norm = self._normalize_power(dwell_result.mean_measured_power_dbm)
+
+        hit_val = 1.0 if hit else 0.0
+        miss_val = 0.0 if hit else 1.0
+        band_norm = float(band) / max(num_bands - 1, 1)
+        dwell_norm = float(dwell_slots) / max(max(self._dwell_options), 1)
+        continuous_hit_norm = min(float(self._consecutive_hits) / 5.0, 1.0)
+        power_norm = float(self._last_measured_power_norm)
+
+        self._hit_miss_buffer = np.roll(self._hit_miss_buffer, -1, axis=0)
+        self._hit_miss_buffer[-1] = [hit_val, miss_val, band_norm, dwell_norm, continuous_hit_norm, power_norm]
 
         terminated = False
         truncated = self._t >= self._episode_length
@@ -234,34 +253,88 @@ class AlterraEnv(gym.Env):
     def _compute_reward(self, dwell_result: DwellResult, delta: int, hit_boundary: bool) -> float:
         reward_cfg = self.config.environment.reward
         reward = 0.0
+        dwell_slots = dwell_result.end_t - dwell_result.start_t
+        max_dwell = max(self._dwell_options)
+        min_dwell = min(self._dwell_options)
+        band = dwell_result.band
+        num_bands = self.config.spectrum.num_bands
 
-        if dwell_result.band not in self._visited_bands:
-            reward += reward_cfg.novelty_bonus
-        self._visited_bands.add(dwell_result.band)
+        # Rule 1 & 4: Unscanned band exploration bonus vs empty revisit penalty
+        is_novel = band not in self._visited_bands
+        if is_novel:
+            reward += 4.0  # Strong reward for visiting an unscanned band
+        elif band in self._tracks and not self._tracks[band].ever_hit and len(self._visited_bands) < num_bands:
+            # Penalize repeatedly re-checking empty bands while unscanned bands remain
+            reward -= 1.5
+
+        self._visited_bands.add(band)
+        has_hits = any(t.ever_hit for t in self._tracks.values())
+        if len(self._visited_bands) >= num_bands and not has_hits:
+            self._visited_bands.clear()
+            for t in self._tracks.values():
+                t.ever_visited = False
 
         best_hit = dwell_result.best_hit
         if best_hit is not None:
             weight = self._threat_weight_by_level.get(best_hit.true_threat_level, 1.0)
             reward += reward_cfg.hit_reward_base * weight
-            # Tracking reward for staying on active frequency
+
+            # Rule 2 & 3: Stay on active signal + DWELL ESCALATION directly proportional to hit sequence!
             if delta == 0:
-                reward += getattr(reward_cfg, "tracking_reward", 6.0) * weight
+                tracking_base = getattr(reward_cfg, "tracking_reward", 8.0) * weight
+
+                # Proportional Dwell Escalation:
+                # 1st hit -> 3 or 5 slots (30-50ms)
+                # 2nd hit -> 5 or 8 slots (50-80ms)
+                # 3rd+ hit -> 12 slots (120ms max)
+                if self._consecutive_hits >= 3:
+                    if dwell_slots == max_dwell:
+                        reward += tracking_base * 2.5  # Large reward for maximum dwell on sustained lock
+                    else:
+                        reward -= 3.0  # Penalty for under-dwelling on a sustained target!
+                elif self._consecutive_hits == 2:
+                    if dwell_slots >= 5:
+                        reward += tracking_base * 1.8
+                    else:
+                        reward += tracking_base * 0.5
+                else:
+                    reward += tracking_base
+            else:
+                # Discovered hit on a new band
+                reward += 2.0
         else:
             reward += reward_cfg.idle_cost
-            # Penalize staying on an empty band to strongly encourage scanning
+
+            # Penalize wasting long dwells on empty/silent channels
+            if dwell_slots > min_dwell:
+                waste_ratio = float(dwell_slots - min_dwell) / float(max_dwell - min_dwell)
+                reward -= 1.0 * waste_ratio
+
+            # Penalize staying on an empty band (encourage moving)
             if delta == 0:
-                reward += getattr(reward_cfg, "empty_stay_penalty", -0.4)
-            # Extra penalty for staying on a dead band right after signal ended
+                reward += -1.0
+            # Strong penalty for staying on a dead band right after signal ended (Rule 4: move immediately)
             if delta == 0 and self._prev_had_hit:
-                reward += getattr(reward_cfg, "signal_lost_penalty", -0.8)
+                reward += -2.5
 
         if hit_boundary:
-            reward += getattr(reward_cfg, "boundary_penalty", -0.2)
+            reward += getattr(reward_cfg, "boundary_penalty", -2.0)
 
         if dwell_result.any_false_alarm:
             reward += reward_cfg.false_alarm_penalty
 
+        # Rule 5: If spectrum is searched, reward revisiting bands where signals were previously intercepted
         staleness_norm = reward_cfg.staleness_norm_slots
+        all_surveyed = len(self._visited_bands) >= int(0.75 * num_bands)
+        if all_surveyed and band in self._tracks:
+            track = self._tracks[band]
+            if track.ever_hit and track.last_hit_t is not None:
+                time_since = self._t - track.last_hit_t
+                staleness = min(time_since / staleness_norm, 1.0)
+                reward += 5.0 * staleness  # Strong bonus to revisit known emitter bands!
+            elif not track.ever_hit:
+                reward -= 1.0  # Avoid known empty dead channels
+
         active_tracks = [
             t for t in self._tracks.values() if t.ever_hit and t.last_hit_t is not None
         ]
@@ -279,8 +352,9 @@ class AlterraEnv(gym.Env):
     def _build_observation(self) -> dict[str, np.ndarray]:
         num_bands = self.config.spectrum.num_bands
         band_tracks = np.zeros((num_bands, TRACK_FEATURE_DIM), dtype=np.float32)
-        band_tracks[:, 2] = 1.0
-        band_tracks[:, 4] = 1.0
+        band_tracks[:, 2] = 1.0  # default staleness (time_since_hit)
+        band_tracks[:, 4] = 1.0  # default time_since_visit
+        band_tracks[:, 6] = 1.0  # default is_unscanned = 1.0
         staleness_norm = self.config.environment.reward.staleness_norm_slots
 
         for band, track in self._tracks.items():
@@ -294,17 +368,20 @@ class AlterraEnv(gym.Env):
             if track.ever_visited and track.last_visited_t is not None:
                 time_since_visit = self._t - track.last_visited_t
                 band_tracks[band, 4] = min(time_since_visit / staleness_norm, 1.0)
-                band_tracks[band, 5] = 1.0
-                band_tracks[band, 6] = track.last_measured_power_norm
+                band_tracks[band, 5] = 1.0  # is_scanned
+                band_tracks[band, 6] = 0.0  # is_unscanned
+                band_tracks[band, 7] = track.last_measured_power_norm
 
         current_band_norm = float(self._current_band) / max(num_bands - 1, 1)
         time_norm = min(float(self._t) / max(self._episode_length, 1), 1.0)
         last_hit_val = 1.0 if (self.last_dwell_result and self.last_dwell_result.any_hit) else 0.0
-        consec_hits_val = min(float(self._consecutive_hits) / 10.0, 1.0)
+        consec_hits_val = min(float(self._consecutive_hits) / 5.0, 1.0)
         can_step_down = 1.0 if self._current_band > 0 else 0.0
         can_step_up = 1.0 if self._current_band < num_bands - 1 else 0.0
         last_power_val = float(self._last_measured_power_norm)
         prev_dir_val = float(self._prev_action_direction_norm)
+        scanned_ratio = float(len(self._visited_bands)) / max(num_bands, 1)
+        unscanned_ratio = 1.0 - scanned_ratio
 
         receiver_features = np.array(
             [
@@ -316,7 +393,13 @@ class AlterraEnv(gym.Env):
                 can_step_up,
                 last_power_val,
                 prev_dir_val,
+                scanned_ratio,
+                unscanned_ratio,
             ],
             dtype=np.float32,
         )
-        return {"band_tracks": band_tracks, "receiver": receiver_features}
+        return {
+            "band_tracks": band_tracks,
+            "receiver": receiver_features,
+            "hit_miss_seq": self._hit_miss_buffer.copy(),
+        }

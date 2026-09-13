@@ -53,6 +53,9 @@ std::string PythonBridge::modeToTraditionalString(SchedulerMode mode) {
 void PythonBridge::ensureModelLoaded() {
     if (modelLoaded_) return;
     try {
+        try {
+            py::module_::import("model.agents.lstm_policy");
+        } catch (const py::error_already_set&) {}
         py::module_ sb3 = py::module_::import("stable_baselines3");
         model_ = sb3.attr("PPO").attr("load")(modelPath_);
         modelLoaded_ = true;
@@ -93,6 +96,8 @@ void PythonBridge::reset(int seed) {
         ensureModelLoaded();
         py::tuple result = env_.attr("reset")(py::arg("seed") = seed);
         obs_ = result[0];
+        currentBand_ = env_.attr("_current_band").cast<int>();
+        sweepDir_ = (currentBand_ > 64) ? -1 : 1;
     } else {
         py::module_ scannerModule = py::module_::import("simulation.environment.traditional_scanner");
         std::string modeStr = modeToTraditionalString(mode_);
@@ -106,8 +111,10 @@ void PythonBridge::reset(int seed) {
     }
     tracker_ = metricsModule_.attr("MetricsTracker")();
     lastHit_ = false;
-    searchDir_ = -1;
-    lockHangover_ = 0;
+    consecutiveHits_ = 0;
+    scannedBands_.clear();
+    knownHitBands_.clear();
+    revisitIdx_ = 0;
 }
 
 StepResult PythonBridge::step() {
@@ -118,27 +125,8 @@ StepResult PythonBridge::step() {
 
         py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
         py::sequence predSeq = prediction[0].cast<py::sequence>();
-        int dwellIdx = predSeq[1].cast<int>();
-
-        int curBand = env_.attr("_current_band").cast<int>();
-        int numBands = config_.attr("spectrum").attr("num_bands").cast<int>();
-
-        int dir = 1; // delta = 0 (STAY / LOCK)
-        if (lockHangover_ > 0) {
-            // Signal intercepted: lock and follow this exact frequency band across pulse gaps!
-            dir = 1; // delta = 0 (STAY)
-            dwellIdx = 2; // 8 slots for deeper signal integration when locked
-            lockHangover_--;
-        } else {
-            // Systematic sweep across spectrum; bounce cleanly off frequency boundaries
-            if (curBand <= 1 && searchDir_ < 0) {
-                searchDir_ = 1; // Bounce up
-            } else if (curBand >= numBands - 2 && searchDir_ > 0) {
-                searchDir_ = -1; // Bounce down
-            }
-            dir = (searchDir_ > 0) ? 2 : 0; // index 2 is delta=+1, index 0 is delta=-1
-            dwellIdx = 0; // fast 3-slot dwell during search for rapid spectrum coverage
-        }
+        int dir = std::clamp(predSeq[0].cast<int>(), 0, 2);
+        int dwellIdx = std::clamp(predSeq[1].cast<int>(), 0, 3);
 
         py::list actList;
         actList.append(dir);
@@ -162,12 +150,15 @@ StepResult PythonBridge::step() {
         r.truncated = truncated;
         r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
 
-        // When a pulse is intercepted, refresh lock hangover to hold track through inter-pulse gaps
+        // Update tracking state
+        currentBand_ = r.band;
+        scannedBands_.insert(r.band);
+        lastHit_ = r.hit;
+
         if (r.hit) {
-            lockHangover_ = 6; // Stay locked for at least 6 dwells across pulse intervals
-            lastHit_ = true;
-        } else if (lockHangover_ == 0) {
-            lastHit_ = false;
+            if (std::find(knownHitBands_.begin(), knownHitBands_.end(), r.band) == knownHitBands_.end()) {
+                knownHitBands_.push_back(r.band);
+            }
         }
     } else {
         py::tuple stepped = driver_.attr("step")();

@@ -51,7 +51,7 @@ MainWindow::MainWindow(const std::string& repoRoot,
 
     auto* modeForm = new QFormLayout();
     modeCombo_ = new QComboBox(configGroup);
-    modeCombo_->addItem("Adaptive (RL model)");
+    modeCombo_->addItem("Adaptive (PPO + LSTM)");
     modeCombo_->addItem("Traditional — Sequential Sweep");
     modeCombo_->addItem("Traditional — Balanced Random");
     modeCombo_->setCurrentIndex(1);  // Traditional Sequential -- always safe to start in

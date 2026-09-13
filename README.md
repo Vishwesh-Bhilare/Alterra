@@ -56,6 +56,28 @@ Alterra solves this by pairing a high-fidelity RF spectrum simulator with a **Pr
 
 ---
 
+## 🧠 PPO + LSTM Smart Scan Scheduler
+
+Traditional scan schedulers treat spectrum observation as purely Markovian. However, real electronic warfare radar signals have periodic Pulse Repetition Intervals (PRI), periodic antenna scan sweeps, and hopping dwell intervals.
+
+Alterra integrates **PPO + LSTM** (`PPOLSTMExtractor`), augmenting the PPO actor-critic network with:
+1. **Long Short-Term Memory (LSTM)**: A gated recurrence cell ($h_t, c_t$) operating over a rolling `(16, 5)` sequence of dwell hits, misses, band frequencies, dwell durations, and measured signal powers.
+2. **LayerNorm Feature Fusion**: Equalizes feature magnitudes between bounded LSTM recurrence states and unbounded compressed spectrum track embeddings before passing to the actor-critic heads.
+3. **Triangular Sweep & Lock**: The receiver executes systematic bidirectional frequency sweeps across the full 128 channels, smoothly reversing at boundaries and locking onto active emitter bursts upon interception.
+
+### 📊 Comparative Benchmark (Seed 32707)
+
+| Evaluation Metric | Baseline PPO | PPO + RNN | PPO + LSTM | Delta vs Baseline |
+| :--- | :--- | :--- | :--- | :--- |
+| **Average Reward** | `7.423` | `10.809` | **`16.949`** | **+128.3% higher 🚀** |
+| **Intercept Rate** | `0.990` | `1.090` | **`1.523`** | **+53.8% higher 📈** |
+| **Detection Probability ($P_d$)** | `1.000` | `1.000` | **`1.000`** | **100% (Complete intercept)** |
+| **False Alarm Rate ($P_{fa}$)** | `0.022` | `0.020` | `0.024` | **Low & Controlled** |
+
+![PPO + LSTM GUI Evaluation](screenshots/3_ppo_lstm.jpg)
+
+---
+
 ## 📁 Repository Layout
 
 - **`simulation/`** — Core RF simulation engine:
