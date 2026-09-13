@@ -49,12 +49,20 @@ void SpectrogramWidget::paintEvent(QPaintEvent*) {
     double sx = width() / double(episodeLength_);
     double sy = height() / double(numBands_);
 
-    painter.setPen(QPen(QColor(255, 60, 60), 2));
-    for (const auto& seg : dwellSegments_) {
+    painter.setPen(QPen(QColor(255, 60, 60), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    for (size_t i = 0; i < dwellSegments_.size(); ++i) {
+        const auto& seg = dwellSegments_[i];
         double x1 = seg.startT * sx;
         double x2 = seg.endT * sx;
         double y = (seg.band + 0.5) * sy;
         painter.drawLine(QPointF(x1, y), QPointF(x2, y));
+
+        if (i > 0) {
+            const auto& prev = dwellSegments_[i - 1];
+            double prevX = prev.endT * sx;
+            double prevY = (prev.band + 0.5) * sy;
+            painter.drawLine(QPointF(prevX, prevY), QPointF(x1, y));
+        }
     }
 
     painter.setPen(QPen(QColor(0, 220, 255), 1));
