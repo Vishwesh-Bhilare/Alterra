@@ -6,6 +6,12 @@ detection outcome -- a real energy detector always reports something
 (noise floor if empty, signal+noise if occupied); this is what lets the
 RL observation carry per-band signal-strength information instead of
 being blind on every miss.
+
+Detection outcome semantics (classification property below):
+  hit            -- true_occupied and detected (successful intercept)
+  miss           -- true_occupied but not detected
+  false_alarm    -- not true_occupied but a detection was triggered anyway
+  correct_reject -- not true_occupied and correctly reported nothing
 """
 from __future__ import annotations
 
@@ -30,6 +36,16 @@ class Detection:
     true_emitter_id: str | None
     true_threat_level: int | None
 
+    @property
+    def classification(self) -> str:
+        if self.true_occupied and self.hit:
+            return "hit"
+        if self.true_occupied and not self.hit:
+            return "miss"
+        if not self.true_occupied and self.false_alarm:
+            return "false_alarm"
+        return "correct_reject"
+
 
 class SensorModel:
     def __init__(self, config: SensorConfig, rng_manager: RNGManager, num_bands: int):
@@ -44,6 +60,12 @@ class SensorModel:
     def _pd(self, snr_db: float) -> float:
         z = (snr_db - self.config.pd_snr50_db) / self.config.pd_slope_db
         return 1.0 / (1.0 + np.exp(-z))
+
+    def detection_threshold_dbm(self, band: int) -> float:
+        """Display/GUI threshold line -- noise floor + configured margin.
+        Does not itself gate `hit`; detection is still governed by the
+        Pd(SNR) logistic curve above, kept intact for RL comparability."""
+        return float(self.noise_floor_dbm[band] + self.config.detection_threshold_db_above_noise)
 
     def observe(self, band_occupancy: BandOccupancy, t: int) -> Detection:
         band = band_occupancy.band

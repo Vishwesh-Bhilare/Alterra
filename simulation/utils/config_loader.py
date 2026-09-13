@@ -32,6 +32,24 @@ class SpectrumConfig:
     band_bandwidth_hz: float
     band_start_freq_hz: float
 
+    def band_range_hz(self, band: int) -> tuple[float, float]:
+        """(low, high) edge frequencies of this band's bin."""
+        lo = self.band_start_freq_hz + band * self.band_bandwidth_hz
+        return lo, lo + self.band_bandwidth_hz
+
+    def band_center_freq_hz(self, band: int) -> float:
+        lo, hi = self.band_range_hz(band)
+        return (lo + hi) / 2.0
+
+    def total_bandwidth_hz(self) -> float:
+        return self.num_bands * self.band_bandwidth_hz
+
+
+@dataclass(frozen=True)
+class ReceiverConfig:
+    instantaneous_bandwidth_hz: float  # B_I -- decoupled from spectrum.band_bandwidth_hz
+    retune_time_s: float               # T_r -- paid when switching to a different band
+
 
 @dataclass(frozen=True)
 class TimingConfig:
@@ -102,6 +120,7 @@ class SensorConfig:
     noise_reading_std_db: float
     measured_power_norm_min: float
     measured_power_norm_max: float
+    detection_threshold_db_above_noise: float
 
 
 @dataclass(frozen=True)
@@ -140,6 +159,12 @@ class ScenarioConfig:
 
 
 @dataclass(frozen=True)
+class SchedulerInsightConfig:
+    power_history_len: int
+    event_history_len: int
+
+
+@dataclass(frozen=True)
 class PulseConfig:
     pri_s_range: FloatRange
     pw_s_range: FloatRange
@@ -151,6 +176,7 @@ class PulseConfig:
 class AlterraConfig:
     rng_seed: int
     spectrum: SpectrumConfig
+    receiver: ReceiverConfig
     timing: TimingConfig
     emitters: EmittersConfig
     sensor: SensorConfig
@@ -158,6 +184,7 @@ class AlterraConfig:
     comparison: ComparisonConfig
     scenario: ScenarioConfig
     pulse: PulseConfig
+    scheduler_insight: SchedulerInsightConfig
 
 
 def _int_range(d: Optional[dict]) -> Optional[IntRange]:
@@ -217,6 +244,9 @@ def load_config(path: str | Path) -> AlterraConfig:
         noise_reading_std_db=float(sensor_raw["noise_reading_std_db"]),
         measured_power_norm_min=float(sensor_raw["measured_power_norm_min"]),
         measured_power_norm_max=float(sensor_raw["measured_power_norm_max"]),
+        detection_threshold_db_above_noise=float(
+            sensor_raw["detection_threshold_db_above_noise"]
+        ),
     )
 
     env_raw = raw["environment"]
@@ -232,6 +262,7 @@ def load_config(path: str | Path) -> AlterraConfig:
         novelty_bonus=float(reward_raw["novelty_bonus"]),
         hit_confirm_floor=float(reward_raw["hit_confirm_floor"]),
     )
+
     environment = EnvironmentConfig(
         dwell_options_slots=[int(v) for v in env_raw["dwell_options_slots"]],
         reward=reward,
@@ -247,7 +278,9 @@ def load_config(path: str | Path) -> AlterraConfig:
     )
 
     scenario_raw = raw.get("scenario", {})
-    scenario = ScenarioConfig(manual_scenario_path=scenario_raw.get("manual_scenario_path"))
+    scenario = ScenarioConfig(
+        manual_scenario_path=scenario_raw.get("manual_scenario_path")
+    )
 
     pulse_raw = raw["pulse"]
     pulse = PulseConfig(
@@ -257,6 +290,20 @@ def load_config(path: str | Path) -> AlterraConfig:
         doa_deg_range=_float_range(pulse_raw["doa_deg_range"]),
     )
 
+    receiver_raw = raw["receiver"]
+    receiver = ReceiverConfig(
+        instantaneous_bandwidth_hz=float(
+            receiver_raw["instantaneous_bandwidth_hz"]
+        ),
+        retune_time_s=float(receiver_raw["retune_time_s"]),
+    )
+
+    si_raw = raw["scheduler_insight"]
+    scheduler_insight = SchedulerInsightConfig(
+        power_history_len=int(si_raw["power_history_len"]),
+        event_history_len=int(si_raw["event_history_len"]),
+    )
+
     return AlterraConfig(
         rng_seed=int(raw["rng_seed"]),
         spectrum=SpectrumConfig(
@@ -264,18 +311,23 @@ def load_config(path: str | Path) -> AlterraConfig:
             band_bandwidth_hz=float(raw["spectrum"]["band_bandwidth_hz"]),
             band_start_freq_hz=float(raw["spectrum"]["band_start_freq_hz"]),
         ),
+        receiver=receiver,
         timing=TimingConfig(
             slot_duration_s=float(raw["timing"]["slot_duration_s"]),
             episode_length_slots=int(raw["timing"]["episode_length_slots"]),
         ),
         emitters=EmittersConfig(
-            population=population, fixed=fixed, agile=agile, periodic_scan=periodic_scan
+            population=population,
+            fixed=fixed,
+            agile=agile,
+            periodic_scan=periodic_scan,
         ),
         sensor=sensor,
         environment=environment,
         comparison=comparison,
         scenario=scenario,
         pulse=pulse,
+        scheduler_insight=scheduler_insight,
     )
 
 
@@ -298,9 +350,14 @@ def apply_overrides(
     means more frequent overlapping activity for a single-channel receiver
     to contend with.
     """
+
     if episode_length_slots is not None:
         config = dataclasses.replace(
-            config, timing=dataclasses.replace(config.timing, episode_length_slots=episode_length_slots)
+            config,
+            timing=dataclasses.replace(
+                config.timing,
+                episode_length_slots=episode_length_slots,
+            ),
         )
 
     if num_emitters is not None:
@@ -323,9 +380,15 @@ def apply_overrides(
                 config.comparison,
                 traditional_scan=dataclasses.replace(
                     current,
-                    mode=traditional_scan_mode if traditional_scan_mode is not None else current.mode,
+                    mode=(
+                        traditional_scan_mode
+                        if traditional_scan_mode is not None
+                        else current.mode
+                    ),
                     dwell_slots=(
-                        traditional_dwell_slots if traditional_dwell_slots is not None else current.dwell_slots
+                        traditional_dwell_slots
+                        if traditional_dwell_slots is not None
+                        else current.dwell_slots
                     ),
                 ),
             ),

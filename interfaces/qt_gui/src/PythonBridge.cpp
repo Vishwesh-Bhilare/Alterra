@@ -93,6 +93,42 @@ void PythonBridge::reset(int seed) {
     tracker_ = metricsModule_.attr("MetricsTracker")();
 }
 
+ClassificationCounts PythonBridge::extractClassificationCounts(const py::object& dwellResult) const {
+    py::dict d = dwellResult.attr("classification_counts")();
+    ClassificationCounts c;
+    c.hit = d["hit"].cast<int>();
+    c.miss = d["miss"].cast<int>();
+    c.falseAlarm = d["false_alarm"].cast<int>();
+    c.correctReject = d["correct_reject"].cast<int>();
+    return c;
+}
+
+FrequencyWindow PythonBridge::extractFrequencyWindow(const py::object& dwellResult) const {
+    FrequencyWindow w;
+    w.centerHz = dwellResult.attr("center_freq_hz").cast<double>();
+    w.loHz = dwellResult.attr("freq_lo_hz").cast<double>();
+    w.hiHz = dwellResult.attr("freq_hi_hz").cast<double>();
+    return w;
+}
+
+SchedulerDecision PythonBridge::extractDecisionFromInfo(const py::dict& info) const {
+    SchedulerDecision d;
+    d.available = true;
+    d.exploreExploit = info["decision"].cast<std::string>();
+    d.reason = info["decision_reason"].cast<std::string>();
+    d.priorityScore = info["priority_score"].cast<double>();
+    return d;
+}
+
+SchedulerDecision PythonBridge::extractDecisionObject(const py::object& decisionObj) const {
+    SchedulerDecision d;
+    d.available = true;
+    d.exploreExploit = decisionObj.attr("explore_exploit").cast<std::string>();
+    d.reason = decisionObj.attr("reason").cast<std::string>();
+    d.priorityScore = decisionObj.attr("priority_score").cast<double>();
+    return d;
+}
+
 StepResult PythonBridge::step() {
     StepResult r;
 
@@ -117,6 +153,10 @@ StepResult PythonBridge::step() {
         r.t = env_.attr("t").cast<int>();
         r.truncated = truncated;
         r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
+        r.retuneSlots = info["retune_slots"].cast<int>();
+        r.freqWindow = extractFrequencyWindow(dwellResult);
+        r.classification = extractClassificationCounts(dwellResult);
+        r.decision = extractDecisionFromInfo(info);
     } else {
         py::tuple stepped = driver_.attr("step")();
         py::object dwellResult = stepped[0];
@@ -132,6 +172,11 @@ StepResult PythonBridge::step() {
         r.t = dwellResult.attr("end_t").cast<int>();
         r.truncated = truncated;
         r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
+        r.retuneSlots = dwellResult.attr("retune_slots").cast<int>();
+        r.freqWindow = extractFrequencyWindow(dwellResult);
+        r.classification = extractClassificationCounts(dwellResult);
+        // r.decision left default (available=false) -- no AlterraEnv.step()
+        // ran for this dwell, so there is no scheduler decision to explain.
     }
 
     r.episodeLength = env_.attr("episode_length").cast<int>();
@@ -161,6 +206,125 @@ TruthMatrix PythonBridge::truthMatrix() {
     tm.data.resize(tm.numBands * tm.episodeLength);
     std::memcpy(tm.data.data(), buf.ptr, tm.data.size());
     return tm;
+}
+
+std::vector<BandPriority> PythonBridge::bandPriorities() {
+    py::list priorities = env_.attr("band_priorities")();
+    std::vector<BandPriority> result;
+    result.reserve(py::len(priorities));
+
+    for (py::handle item : priorities) {
+        py::object p = py::reinterpret_borrow<py::object>(item);
+        BandPriority bp;
+        bp.band = p.attr("band").cast<int>();
+        bp.priorityScore = p.attr("priority_score").cast<double>();
+        bp.visitCount = p.attr("visit_count").cast<int>();
+        bp.hitCount = p.attr("hit_count").cast<int>();
+        bp.everVisited = p.attr("ever_visited").cast<bool>();
+        bp.everHit = p.attr("ever_hit").cast<bool>();
+        bp.confidence = p.attr("confidence").cast<double>();
+        bp.threatLevel = p.attr("threat_level").cast<int>();
+
+        py::object tsv = p.attr("time_since_visit");
+        bp.timeSinceVisit = tsv.is_none() ? -1 : tsv.cast<int>();
+        py::object tsh = p.attr("time_since_hit");
+        bp.timeSinceHit = tsh.is_none() ? -1 : tsh.cast<int>();
+
+        result.push_back(bp);
+    }
+    return result;
+}
+
+std::vector<SchedulerHistoryEvent> PythonBridge::recentEvents(int n) {
+    py::object nArg = (n < 0) ? py::object(py::none()) : py::object(py::cast(n));
+    py::list events = env_.attr("recent_events")(nArg);
+
+    std::vector<SchedulerHistoryEvent> result;
+    result.reserve(py::len(events));
+    for (py::handle item : events) {
+        py::object e = py::reinterpret_borrow<py::object>(item);
+        SchedulerHistoryEvent he;
+        he.t = e.attr("t").cast<int>();
+        he.band = e.attr("band").cast<int>();
+        he.centerFreqHz = e.attr("center_freq_hz").cast<double>();
+        he.dwellSlots = e.attr("dwell_slots").cast<int>();
+        he.retuneSlots = e.attr("retune_slots").cast<int>();
+        he.meanPowerDbm = e.attr("mean_power_dbm").cast<double>();
+        he.reward = e.attr("reward").cast<double>();
+
+        py::dict counts = e.attr("classification_counts");
+        he.classification.hit = counts["hit"].cast<int>();
+        he.classification.miss = counts["miss"].cast<int>();
+        he.classification.falseAlarm = counts["false_alarm"].cast<int>();
+        he.classification.correctReject = counts["correct_reject"].cast<int>();
+
+        he.decision = extractDecisionObject(e.attr("decision"));
+
+        result.push_back(he);
+    }
+    return result;
+}
+
+std::vector<SchedulerHistoryEvent> PythonBridge::recentHits(int n) {
+    py::object nArg = (n < 0) ? py::object(py::none()) : py::object(py::cast(n));
+    py::list events = env_.attr("recent_hits")(nArg);
+
+    std::vector<SchedulerHistoryEvent> result;
+    result.reserve(py::len(events));
+    for (py::handle item : events) {
+        py::object e = py::reinterpret_borrow<py::object>(item);
+        SchedulerHistoryEvent he;
+        he.t = e.attr("t").cast<int>();
+        he.band = e.attr("band").cast<int>();
+        he.centerFreqHz = e.attr("center_freq_hz").cast<double>();
+        he.dwellSlots = e.attr("dwell_slots").cast<int>();
+        he.retuneSlots = e.attr("retune_slots").cast<int>();
+        he.meanPowerDbm = e.attr("mean_power_dbm").cast<double>();
+        he.reward = e.attr("reward").cast<double>();
+
+        py::dict counts = e.attr("classification_counts");
+        he.classification.hit = counts["hit"].cast<int>();
+        he.classification.miss = counts["miss"].cast<int>();
+        he.classification.falseAlarm = counts["false_alarm"].cast<int>();
+        he.classification.correctReject = counts["correct_reject"].cast<int>();
+
+        he.decision = extractDecisionObject(e.attr("decision"));
+
+        result.push_back(he);
+    }
+    return result;
+}
+
+std::vector<double> PythonBridge::noiseFloorDbm() {
+    py::object sensor = env_.attr("_sensor_model");
+    py::array_t<double> arr = sensor.attr("noise_floor_dbm").cast<py::array_t<double>>();
+    auto buf = arr.request();
+    const double* ptr = static_cast<const double*>(buf.ptr);
+    return std::vector<double>(ptr, ptr + buf.shape[0]);
+}
+
+double PythonBridge::detectionThresholdMarginDb() const {
+    return config_.attr("sensor").attr("detection_threshold_db_above_noise").cast<double>();
+}
+
+double PythonBridge::instantaneousBandwidthHz() const {
+    return config_.attr("receiver").attr("instantaneous_bandwidth_hz").cast<double>();
+}
+
+double PythonBridge::retuneTimeS() const {
+    return config_.attr("receiver").attr("retune_time_s").cast<double>();
+}
+
+double PythonBridge::bandBandwidthHz() const {
+    return config_.attr("spectrum").attr("band_bandwidth_hz").cast<double>();
+}
+
+double PythonBridge::bandStartFreqHz() const {
+    return config_.attr("spectrum").attr("band_start_freq_hz").cast<double>();
+}
+
+int PythonBridge::numBands() const {
+    return config_.attr("spectrum").attr("num_bands").cast<int>();
 }
 
 int PythonBridge::defaultEpisodeLengthSlots() const {

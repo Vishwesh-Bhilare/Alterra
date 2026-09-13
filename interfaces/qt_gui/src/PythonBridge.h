@@ -40,6 +40,33 @@ struct ManualConfig {
     int traditionalDwellSlots = 8;
 };
 
+// Receiver-window bounds for a single dwell (Module A) -- sized by the
+// receiver's instantaneous bandwidth, not the spectrum's band-bin width.
+struct FrequencyWindow {
+    double centerHz = 0.0;
+    double loHz = 0.0;
+    double hiHz = 0.0;
+};
+
+// Per-dwell outcome tally (Module A) -- mirrors Detection.classification:
+// hit | miss | false_alarm | correct_reject, one bucket per slot dwelled.
+struct ClassificationCounts {
+    int hit = 0;
+    int miss = 0;
+    int falseAlarm = 0;
+    int correctReject = 0;
+};
+
+// Scheduler explainability (Module B). `available` is false whenever the
+// current mode doesn't run through AlterraEnv.step() (i.e. traditional
+// scan modes) -- there is no decision to explain for a fixed schedule.
+struct SchedulerDecision {
+    bool available = false;
+    std::string exploreExploit;   // "EXPLORE" | "EXPLOIT"
+    std::string reason;
+    double priorityScore = 0.0;
+};
+
 struct StepResult {
     int band = 0;
     int dwellSlots = 0;
@@ -50,6 +77,10 @@ struct StepResult {
     int episodeLength = 0;
     bool truncated = false;
     double measuredPowerDbm = 0.0;
+    int retuneSlots = 0;
+    FrequencyWindow freqWindow;
+    ClassificationCounts classification;
+    SchedulerDecision decision;
 };
 
 struct EpisodeMetrics {
@@ -64,6 +95,39 @@ struct TruthMatrix {
     int numBands = 0;
     int episodeLength = 0;
     std::vector<uint8_t> data;
+};
+
+// Per-band ranking snapshot (Module B) -- meaningful only in Rl mode;
+// in a traditional-scan mode every band reports ever_visited=false since
+// TraditionalScanDriver bypasses AlterraEnv's track-updating step().
+// time_since_visit/time_since_hit are -1 when not yet applicable (Python
+// None).
+struct BandPriority {
+    int band = 0;
+    double priorityScore = 0.0;
+    int visitCount = 0;
+    int hitCount = 0;
+    bool everVisited = false;
+    bool everHit = false;
+    double confidence = 0.0;
+    int threatLevel = 0;
+    int timeSinceVisit = -1;
+    int timeSinceHit = -1;
+};
+
+// One rolling scheduler-history entry (Module B), for a decisions/detections
+// table or feed. Only populated for steps taken via AlterraEnv.step()
+// (Rl mode).
+struct SchedulerHistoryEvent {
+    int t = 0;
+    int band = 0;
+    double centerFreqHz = 0.0;
+    int dwellSlots = 0;
+    int retuneSlots = 0;
+    ClassificationCounts classification;
+    double meanPowerDbm = 0.0;
+    SchedulerDecision decision;
+    double reward = 0.0;
 };
 
 class PythonBridge {
@@ -86,6 +150,24 @@ public:
     EpisodeMetrics currentMetrics();
     TruthMatrix truthMatrix();
 
+    // Module B: full-spectrum ranking snapshot / rolling decision history,
+    // fetched on demand (not part of every step's StepResult). n = -1
+    // means "all available" for recentEvents/recentHits.
+    std::vector<BandPriority> bandPriorities();
+    std::vector<SchedulerHistoryEvent> recentEvents(int n = -1);
+    std::vector<SchedulerHistoryEvent> recentHits(int n = -1);
+
+    // Module A: static-per-episode receiver/spectrum facts for GUI axis
+    // and overlay setup -- don't change dwell-to-dwell, so fetched once
+    // rather than repeated on every StepResult.
+    std::vector<double> noiseFloorDbm();
+    double detectionThresholdMarginDb() const;   // add to noiseFloorDbm()[band] for the line
+    double instantaneousBandwidthHz() const;      // B_I
+    double retuneTimeS() const;                   // T_r
+    double bandBandwidthHz() const;               // spectrum bin width (not B_I)
+    double bandStartFreqHz() const;
+    int numBands() const;
+
     // Read the currently-loaded config's defaults, to seed GUI widgets on
     // startup (before any manual override has been applied).
     int defaultEpisodeLengthSlots() const;
@@ -97,6 +179,11 @@ public:
 private:
     void ensureModelLoaded();
     static std::string modeToTraditionalString(SchedulerMode mode);  // "" for Rl
+
+    ClassificationCounts extractClassificationCounts(const py::object& dwellResult) const;
+    FrequencyWindow extractFrequencyWindow(const py::object& dwellResult) const;
+    SchedulerDecision extractDecisionFromInfo(const py::dict& info) const;
+    SchedulerDecision extractDecisionObject(const py::object& decisionObj) const;
 
     py::scoped_interpreter guard_;
     py::module_ metricsModule_;

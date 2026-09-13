@@ -40,10 +40,29 @@ private:
     SchedulerMode selectedMode() const;
     void doStep();
     void updateMetricsLabel();
+    void updateDecisionPanel(const StepResult& r);
+    void appendEventRow(const StepResult& r, int startT);
+    void refreshPriorityTable();
+    void refreshDetectionsTable();
+    void refreshStatsLabel();
+    QString freqLabelForBand(int band) const;
 
     std::unique_ptr<Ui::MainWindow> ui;
     std::unique_ptr<PythonBridge> bridge_;
     QTimer* timer_ = nullptr;
     bool running_ = false;
     int prevT_ = 0;
+
+    // Module D running counters -- reset in onResetEpisode(), used by
+    // the Statistics tab (2.5). Independent of MetricsTracker/EpisodeMetrics,
+    // which cover the problem statement's own figures of merit.
+    int exploreCount_ = 0;
+    int exploitCount_ = 0;
+    int totalHits_ = 0;
+    int totalMisses_ = 0;
+    int totalFalseAlarms_ = 0;
+    int totalCorrectRejects_ = 0;
+
+    double bandStartFreqHz_ = 0.0;
+    double bandBandwidthHz_ = 0.0;
 };

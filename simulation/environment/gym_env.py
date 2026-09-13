@@ -12,12 +12,25 @@ again; retrain from scratch, do not resume prior checkpoints.
 Prior fix (kept): visit state tracked independently of hit state, so a
 miss still updates "last checked" even without a detection.
 
+RECEIVER MODEL UPGRADE (Module A): Receiver now models retune time as
+slots consumed before a dwell's detections begin when switching bands,
+and exposes each dwell's actual frequency window. Flagged for the PPO
+team in docs/model_changes.md -- not yet reflected in reward shaping.
+
+SCHEDULER EXPLAINABILITY (Module B): `BandTrack` now also tracks
+visit_count/hit_count/power_history (see scheduler_insight.py). Every
+step computes a priority score + EXPLORE/EXPLOIT + reason for the band
+just dwelled on (`self.last_decision`), using track state as of *before*
+this dwell -- i.e. what the scheduler "knew" when it picked this band --
+and logs a rolling history (`self.recent_events()`). Purely derived,
+observation/action/reward untouched.
+
 KNOWN SIMPLIFICATION: observation "tracks" are indexed by band, not by
 deinterleaved emitter identity -- swap once model/deinterleaving exists.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
 
 import gymnasium as gym
 import numpy as np
@@ -25,6 +38,15 @@ from gymnasium import spaces
 
 from simulation.emitters import BaseEmitter, build_population
 from simulation.environment.receiver import DwellResult, Receiver
+from simulation.environment.scheduler_insight import (
+    BandPriority,
+    BandTrack,
+    DecisionExplanation,
+    HistoryEvent,
+    SchedulerHistory,
+    compute_band_priorities,
+    explain_decision,
+)
 from simulation.environment.sensor_model import SensorModel
 from simulation.environment.spectrum_world import SpectrumWorld
 from simulation.utils.config_loader import AlterraConfig
@@ -32,17 +54,6 @@ from simulation.utils.rng import RNGManager
 
 TRACK_FEATURE_DIM = 7  # [threat_norm, confidence, time_since_hit, ever_hit, time_since_visit, ever_visited, last_power_norm]
 RECEIVER_FEATURE_DIM = 2
-
-
-@dataclass
-class _BandTrack:
-    threat_level: int = 0
-    confidence: float = 0.0
-    last_hit_t: int | None = None
-    ever_hit: bool = False
-    last_visited_t: int | None = None
-    ever_visited: bool = False
-    last_measured_power_norm: float = 0.0
 
 
 class AlterraEnv(gym.Env):
@@ -71,6 +82,8 @@ class AlterraEnv(gym.Env):
         )
 
         self._episode_length = config.timing.episode_length_slots
+        self._power_history_len = config.scheduler_insight.power_history_len
+        self._event_history_len = config.scheduler_insight.event_history_len
 
         threat_levels = config.environment.reward.threat_weight_levels
         threat_values = config.environment.reward.threat_weight_values
@@ -81,11 +94,13 @@ class AlterraEnv(gym.Env):
         self._spectrum_world: SpectrumWorld | None = None
         self._sensor_model: SensorModel | None = None
         self._receiver: Receiver | None = None
-        self._tracks: dict[int, _BandTrack] = {}
+        self._tracks: dict[int, BandTrack] = {}
         self._visited_bands: set[int] = set()
         self._t = 0
         self._last_band = 0
         self.last_dwell_result: DwellResult | None = None
+        self.last_decision: DecisionExplanation | None = None
+        self._history = SchedulerHistory(maxlen=self._event_history_len)
 
     @property
     def t(self) -> int:
@@ -127,13 +142,15 @@ class AlterraEnv(gym.Env):
             rng_manager=episode_rng_manager,
             num_bands=self.config.spectrum.num_bands,
         )
-        self._receiver = Receiver(self._spectrum_world, self._sensor_model)
+        self._receiver = Receiver(self._spectrum_world, self._sensor_model, self.config)
 
         self._tracks = {}
         self._visited_bands = set()
         self._t = 0
         self._last_band = 0
         self.last_dwell_result = None
+        self.last_decision = None
+        self._history = SchedulerHistory(maxlen=self._event_history_len)
 
         return self._build_observation(), {}
 
@@ -148,6 +165,26 @@ class AlterraEnv(gym.Env):
         self._last_band = band
 
         reward = self._compute_reward(dwell_result)
+
+        # Decision explanation uses track state as of BEFORE this dwell's
+        # own update below -- i.e. what the scheduler actually knew.
+        prior_track = self._tracks.get(band)
+        decision = explain_decision(prior_track, self._t, self.config)
+        self.last_decision = decision
+        self._history.record(
+            HistoryEvent(
+                t=self._t,
+                band=band,
+                center_freq_hz=dwell_result.center_freq_hz,
+                dwell_slots=dwell_slots,
+                retune_slots=dwell_result.retune_slots,
+                classification_counts=dwell_result.classification_counts(),
+                mean_power_dbm=dwell_result.mean_measured_power_dbm,
+                decision=decision,
+                reward=reward,
+            )
+        )
+
         self._apply_dwell_to_tracks(band, dwell_result)
 
         terminated = False
@@ -158,8 +195,24 @@ class AlterraEnv(gym.Env):
             "any_false_alarm": dwell_result.any_false_alarm,
             "band": band,
             "dwell_slots": dwell_slots,
+            "retune_slots": dwell_result.retune_slots,
+            "center_freq_hz": dwell_result.center_freq_hz,
+            "decision": decision.explore_exploit,
+            "decision_reason": decision.reason,
+            "priority_score": decision.priority_score,
         }
         return observation, reward, terminated, truncated, info
+
+    def band_priorities(self) -> list[BandPriority]:
+        """Priority/ranking snapshot across all bands, for a GUI priority
+        map or ranking table. Computed on demand, not cached per step."""
+        return compute_band_priorities(self._tracks, self.config.spectrum.num_bands, self._t, self.config)
+
+    def recent_events(self, n: int | None = None) -> list[HistoryEvent]:
+        return self._history.recent(n)
+
+    def recent_hits(self, n: int | None = None) -> list[HistoryEvent]:
+        return self._history.recent_hits(n)
 
     def _normalize_power(self, power_dbm: float) -> float:
         lo = self.config.sensor.measured_power_norm_min
@@ -169,10 +222,16 @@ class AlterraEnv(gym.Env):
     def _apply_dwell_to_tracks(self, band: int, dwell_result: DwellResult) -> None:
         # Every dwell updates visit + measured-power state, regardless of
         # outcome -- a miss is still information.
-        track = self._tracks.setdefault(band, _BandTrack())
+        if band not in self._tracks:
+            self._tracks[band] = BandTrack(power_history=deque(maxlen=self._power_history_len))
+        track = self._tracks[band]
+
         track.ever_visited = True
         track.last_visited_t = self._t
-        track.last_measured_power_norm = self._normalize_power(dwell_result.mean_measured_power_dbm)
+        track.visit_count += 1
+        power_norm = self._normalize_power(dwell_result.mean_measured_power_dbm)
+        track.last_measured_power_norm = power_norm
+        track.power_history.append(power_norm)
 
         best_hit = dwell_result.best_hit
         if best_hit is None:
@@ -181,6 +240,7 @@ class AlterraEnv(gym.Env):
         track.confidence = min(1.0, track.confidence + 0.34)
         track.last_hit_t = self._t
         track.ever_hit = True
+        track.hit_count += 1
 
     def _compute_reward(self, dwell_result: DwellResult) -> float:
         reward_cfg = self.config.environment.reward

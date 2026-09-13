@@ -399,3 +399,158 @@ headers are included. Fixed via `QT_NO_KEYWORDS` (use `Q_SLOTS` instead of
 `slots` in Qt class declarations) plus a `#pragma push_macro/pop_macro`
 guard around the pybind11 includes in `PythonBridge.h` for translation
 units that don't set that flag.
+
+---
+
+## 13. Simulation realism upgrade — Module A (config + physical realism)
+
+Config-driven receiver model + real frequency mapping, ahead of the GUI
+overhaul (see section 12) and PPO reward/action decisions (see
+`docs/model_changes.md`, written for the PPO/agents owner).
+
+- **New `receiver:` config section**: `instantaneous_bandwidth_hz` (B_I,
+  decoupled from `spectrum.band_bandwidth_hz` — the latter is now purely
+  the spectrum's binning resolution) and `retune_time_s` (T_r).
+- **`Receiver` now models retune time**: switching bands costs
+  `retune_time_s` (converted to slots) before the new dwell's detections
+  begin, consumed from the same slot budget as everything else. Applies
+  identically to `TraditionalScanDriver` since both go through
+  `Receiver.dwell`. **No reward change accompanies this** — flagged as an
+  open decision for the PPO owner in `docs/model_changes.md`.
+- **Real frequency mapping**: `SpectrumConfig.band_center_freq_hz(band)` /
+  `band_range_hz(band)` / `total_bandwidth_hz()`. `DwellResult` now carries
+  `center_freq_hz`, `freq_lo_hz`, `freq_hi_hz` (receiver-window bounds,
+  sized by B_I, not the band bin) and `retune_slots` actually consumed.
+- **Detection semantics made explicit**: `Detection.classification`
+  property → `hit | miss | false_alarm | correct_reject`, derived from
+  existing fields, no change to the Pd(SNR) logistic detection model.
+  `DwellResult.classification_counts()` added for convenience.
+  `SensorModel.detection_threshold_dbm(band)` / new
+  `sensor.detection_threshold_db_above_noise` config field give a
+  noise-floor-relative threshold for display purposes (does not gate
+  `hit` itself).
+- **Metrics (`rollout_metrics.py`) reviewed, not changed**: Pd/Pfa/percent
+  correct/avg intercept rate were already computed from actual
+  detections/false-alarms with valid ranges — no bug found here.
+
+**Not yet done, explicitly deferred to the PPO/agents owner**: whether
+retune cost enters the reward function; whether the current 4-option
+`dwell_options_slots` menu satisfies "adaptive dwell" or needs to become
+richer/continuous. See `docs/model_changes.md` for the full handoff note.
+
+**Next (Module B)**: exposing existing `band_tracks` state (confidence,
+staleness, visit history — all already computed) as GUI-facing scheduler
+history/priority data; explore/exploit labeling, either heuristic (no PPO
+change) or policy-entropy-derived (needs PPO exposure).
+
+---
+
+## 14. Scheduler explainability — Module B
+
+`BandTrack` (moved to new `simulation/environment/scheduler_insight.py`,
+imported by `gym_env.py`) now also carries `visit_count`, `hit_count`, and
+a bounded `power_history` deque (length from new config
+`scheduler_insight.power_history_len`) — purely additive, does not touch
+`band_tracks`'s observation encoding.
+
+Every `AlterraEnv.step()` now computes, using track state as of *before*
+that step's own update (i.e. what the scheduler actually knew when it
+picked the band):
+
+- `compute_priority_score` — a 0-1 "worth revisiting" score, deliberately
+  the mirror image of `_compute_reward`'s existing staleness_penalty term
+  (unvisited bands score max; visited-with-a-hit bands rise again as that
+  sighting goes stale, weighted by threat x confidence).
+- `explain_decision` — `EXPLORE`/`EXPLOIT` + a short human-readable reason
+  string (e.g. `"Recent strong detection"`, `"Never scanned before"`).
+
+Exposed via `env.last_decision`, `env.step()`'s info dict
+(`decision`/`decision_reason`/`priority_score`), `env.band_priorities()`
+(full-spectrum ranking snapshot, on demand), and
+`env.recent_events()` / `env.recent_hits()` (rolling history, bounded by
+new config `scheduler_insight.event_history_len`).
+
+**Heuristic, not policy-derived**: explore/exploit is inferred from
+existing `band_tracks` state after the fact, not from the PPO policy's
+actual action distribution/entropy — no PPO exposure needed, nothing here
+requires a retrain (confirmed no observation/action/reward changes).
+
+**Only wired into `AlterraEnv.step()`** — `TraditionalScanDriver` bypasses
+`step()` entirely (calls `Receiver.dwell` directly), so it has no
+decision/priority/history data, which is expected: explainability is
+scoped to the adaptive scheduler being explained, not the non-adaptive
+baseline.
+
+**Next (Module C)**: bridge this + Module A's frequency/threshold data
+into `PythonBridge`/`StepResult` so the Qt GUI can actually render it.
+
+---
+
+## 15. Bridge layer — Module C
+
+`PythonBridge` extended to surface Module A + B data to the C++ side, no
+Python-side changes needed (everything was already exposed by `DwellResult`/
+`AlterraEnv` methods added in Modules A/B).
+
+- **`StepResult`** gained `retuneSlots`, `freqWindow` (`FrequencyWindow`:
+  centerHz/loHz/hiHz), `classification` (`ClassificationCounts`:
+  hit/miss/falseAlarm/correctReject), and `decision`
+  (`SchedulerDecision`: available/exploreExploit/reason/priorityScore).
+- **freqWindow/retuneSlots/classification are populated in both RL and
+  traditional-scan modes** — they come from `DwellResult` itself
+  (Receiver-level, Module A), not from `AlterraEnv.step()`.
+- **`decision.available` is only `true` in RL mode** — traditional scan
+  bypasses `AlterraEnv.step()` (calls `Receiver.dwell` directly via
+  `TraditionalScanDriver`), so there's no scheduler decision to explain,
+  by design (matches Module B's own scoping note).
+- **New bridge methods**: `bandPriorities()`, `recentEvents(n)`,
+  `recentHits(n)` (Module B, on-demand — meaningful only in RL mode, same
+  caveat as above), `noiseFloorDbm()` + `detectionThresholdMarginDb()`
+  (per-band threshold line = sum of the two), `instantaneousBandwidthHz()`,
+  `retuneTimeS()`, `bandBandwidthHz()`, `bandStartFreqHz()`, `numBands()`
+  (static per-episode config, fetched once for GUI axis setup rather than
+  repeated per step).
+
+**Next (Module D)**: wire all of the above into `MainWindow`/`SpectrogramWidget`
+— real frequency axis, receiver-window rendering, legend, decision panel,
+structured table, and the extra panels (priority map, recent detections,
+scheduler stats) — this is the last module and has no further Python-side
+dependencies.
+
+---
+
+## 16. GUI overhaul — Module D (last module)
+
+`MainWindow.ui` restructured: added a "Scheduler Decision" group box
+(current band/freq, priority score, EXPLORE/EXPLOIT + color, reason —
+shows "N/A (non-adaptive mode)" when `decision.available` is false, i.e.
+traditional-scan modes) between the config panel and the spectrogram, and
+replaced the standalone log with a `QSplitter` at the bottom:
+`eventsTable` (structured `Time | Band | Frequency | Dwell | Signal |
+Result | Reward`, rows color-coded by outcome, capped at 500 rows) next to
+a `QTabWidget` with **Priority Map** (top 15 bands by
+`bandPriorities()`, refreshed every step), **Recent Detections** (last 10
+hits via `recentHits(10)`), **Statistics** (running explore/exploit +
+hit/miss/false-alarm/correct-reject counts, tracked in `MainWindow`, reset
+each episode), and **Log** (same `objectName="log"` as before, so no
+logging call sites changed).
+
+`SpectrogramWidget` reworked: real frequency y-axis (`setSpectrumGeometry`,
+tick labels via `bandStartFreqHz`/`bandBandwidthHz`, gridlines), dwell
+trajectory color-coded by outcome (green hit / orange miss / red false
+alarm / grey correct-reject), most recent dwell rendered as a filled
+receiver-window rectangle (real frequency interval, not a point — uses
+`freq_lo_hz`/`freq_hi_hz`, independent of the band-bin y-ticks), and an
+in-widget legend covering all of 2.2's required elements.
+
+**Consolidation choices made**: "Detection Performance" (2.5) folded into
+the same Statistics tab as "Scheduler statistics" rather than a 5th tab —
+both are small enough to share one view without crowding; the existing
+top-of-window `metricsLabel` (Pd/Pfa/intercept rate/avg reward) still
+covers the problem-statement figures of merit separately, unchanged.
+
+**All checklist items (1, 2.1-2.5, 3.1-3.5, 3.7, 3.9) are now implemented
+end-to-end** except the two items explicitly deferred to the PPO/agents
+owner in `docs/model_changes.md` (3.6 adaptive dwell, and whether retune
+cost enters the reward) — those remain open, no further simulation/GUI
+work is blocked on them.

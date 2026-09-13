@@ -6,8 +6,13 @@ rng_seed: 42
 # Spectrum definition
 spectrum:
   num_bands: 128                    # 128 bands covering ~1-10 GHz range
-  band_bandwidth_hz: 70e6           # 70 MHz per band
+  band_bandwidth_hz: 70e6           # 70 MHz per band (binning resolution)
   band_start_freq_hz: 1.0e9         # Start at 1 GHz
+
+# Physical receiver model -- decoupled from the spectrum's band binning above.
+receiver:
+  instantaneous_bandwidth_hz: 70e6   # B_I - actual RF front-end bandwidth per dwell
+  retune_time_s: 0.001                # T_r - settling time paid when switching bands
 
 # Timing model
 timing:
@@ -61,6 +66,7 @@ sensor:
   noise_reading_std_db: 1.5
   measured_power_norm_min: -100.0
   measured_power_norm_max: 40.0
+  detection_threshold_db_above_noise: 6.0   # display/GUI threshold line: noise_floor + this
 
 # Environment and RL reward structure
 environment:
@@ -96,3 +102,9 @@ pulse:
   pw_s_range: {min: 0.00001, max: 0.0005}
   pri_jitter_std_s: 0.00002
   doa_deg_range: {min: 0.0, max: 360.0}
+
+# Scheduler explainability / GUI history buffers (Module B) -- no effect
+# on observation, action, or reward; purely for GUI/history display.
+scheduler_insight:
+  power_history_len: 20    # per-band rolling signal-strength history length
+  event_history_len: 200   # global recent-decisions/detections history length
