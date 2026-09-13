@@ -96,6 +96,8 @@ void PythonBridge::reset(int seed) {
         ensureModelLoaded();
         py::tuple result = env_.attr("reset")(py::arg("seed") = seed);
         obs_ = result[0];
+        currentBand_ = env_.attr("_current_band").cast<int>();
+        sweepDir_ = (currentBand_ > 64) ? -1 : 1;
     } else {
         py::module_ scannerModule = py::module_::import("simulation.environment.traditional_scanner");
         std::string modeStr = modeToTraditionalString(mode_);
@@ -109,6 +111,10 @@ void PythonBridge::reset(int seed) {
     }
     tracker_ = metricsModule_.attr("MetricsTracker")();
     lastHit_ = false;
+    consecutiveHits_ = 0;
+    scannedBands_.clear();
+    knownHitBands_.clear();
+    revisitIdx_ = 0;
 }
 
 StepResult PythonBridge::step() {
@@ -116,21 +122,11 @@ StepResult PythonBridge::step() {
 
     if (mode_ == SchedulerMode::Rl) {
         ensureModelLoaded();
-        static std::mt19937 rng{std::random_device{}()};
 
-        py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = false);
+        py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
         py::sequence predSeq = prediction[0].cast<py::sequence>();
-        int dwellIdx = predSeq[1].cast<int>();
-
-        int dir = 1; // Default to STAY (index 1 is delta=0 in [-1, 0, 1])
-        if (lastHit_) {
-            // Intercepted active radio signal: lock and stay on this exact frequency band!
-            dir = 1; // delta = 0 (STAY)
-        } else {
-            // Signal lost or searching: randomly pick +1 (index 2) or -1 (index 0)
-            std::uniform_int_distribution<int> dist(0, 1);
-            dir = (dist(rng) == 0) ? 0 : 2;
-        }
+        int dir = std::clamp(predSeq[0].cast<int>(), 0, 2);
+        int dwellIdx = std::clamp(predSeq[1].cast<int>(), 0, 3);
 
         py::list actList;
         actList.append(dir);
@@ -154,8 +150,16 @@ StepResult PythonBridge::step() {
         r.truncated = truncated;
         r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
 
-        // Update lock state: if hit, stay locked; if miss, signal is lost -> search next step
+        // Update tracking state
+        currentBand_ = r.band;
+        scannedBands_.insert(r.band);
         lastHit_ = r.hit;
+
+        if (r.hit) {
+            if (std::find(knownHitBands_.begin(), knownHitBands_.end(), r.band) == knownHitBands_.end()) {
+                knownHitBands_.push_back(r.band);
+            }
+        }
     } else {
         py::tuple stepped = driver_.attr("step")();
         py::object dwellResult = stepped[0];

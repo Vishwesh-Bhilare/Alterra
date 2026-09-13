@@ -15,7 +15,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 class PPOLSTMExtractor(BaseFeaturesExtractor):
     """
     Long Short-Term Memory (LSTM) Feature Extractor.
-    Processes the (seq_len, 5) hit/miss history using an nn.LSTM layer,
+    Processes the (seq_len, 6) hit/miss history using an nn.LSTM layer,
     extracting the temporal hidden state h_n to guide PPO on where to search next.
     """
     def __init__(
@@ -58,15 +58,15 @@ class PPOLSTMExtractor(BaseFeaturesExtractor):
         )
 
     def forward(self, observations: dict[str, torch.Tensor]) -> torch.Tensor:
-        # observations['hit_miss_seq']: (batch_size, seq_len, 5)
+        # observations['hit_miss_seq']: (batch_size, seq_len, 6)
         seq = observations["hit_miss_seq"]
         _, (h_n, _) = self.lstm(seq)  # h_n: (num_layers, batch_size, lstm_hidden_dim)
         lstm_features = self.lstm_norm(h_n[-1])       # (batch_size, lstm_hidden_dim)
 
-        # Receiver features: (batch_size, 8)
+        # Receiver features: (batch_size, 10)
         rec = observations["receiver"]
 
-        # Global spectrum band tracks: (batch_size, 128, 7) -> (batch_size, 128*7) -> (batch_size, 128)
+        # Global spectrum band tracks: (batch_size, 128, 8) -> (batch_size, 128*8) -> (batch_size, 128)
         tracks_flat = torch.flatten(observations["band_tracks"], start_dim=1)
         tracks_emb = self.tracks_compressor(tracks_flat)
 

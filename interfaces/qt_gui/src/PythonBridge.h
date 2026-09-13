@@ -13,8 +13,10 @@
 #pragma pop_macro("slots")
 #endif
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace py = pybind11;
@@ -114,4 +116,8 @@ private:
     bool lastHit_ = false;
     int sweepDir_ = -1;
     int currentBand_ = 0;
+    std::unordered_set<int> scannedBands_;
+    std::vector<int> knownHitBands_;
+    int consecutiveHits_ = 0;
+    size_t revisitIdx_ = 0;
 };
