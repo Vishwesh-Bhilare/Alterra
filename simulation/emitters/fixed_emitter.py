@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .base_emitter import BaseEmitter
-from .schedule_utils import power_schedule_from_mask, two_state_markov_mask
+from .schedule_utils import power_schedule_from_mask, two_state_markov_mask, windows_mask
 
 
 class FixedEmitter(BaseEmitter):
@@ -21,6 +21,7 @@ class FixedEmitter(BaseEmitter):
         mean_burst_slots: float,
         power_mean_dbm: float,
         power_jitter_std_db: float,
+        active_windows: list[tuple[int, int]] | None = None,
     ):
         super().__init__(emitter_id, threat_level, rng, pri_s, pw_s, pri_jitter_std_s, doa_deg)
         self.band = band
@@ -28,11 +29,17 @@ class FixedEmitter(BaseEmitter):
         self.mean_burst_slots = mean_burst_slots
         self.power_mean_dbm = power_mean_dbm
         self.power_jitter_std_db = power_jitter_std_db
+        # Scripted test-scenario override (Module E1) -- when set, replaces
+        # the probabilistic Markov mask with an exact on/off schedule.
+        self.active_windows = active_windows
 
     def _build_schedule(self, episode_length: int) -> None:
-        mask = two_state_markov_mask(
-            self._rng, episode_length, self.duty_cycle, self.mean_burst_slots
-        )
+        if self.active_windows is not None:
+            mask = windows_mask(episode_length, self.active_windows)
+        else:
+            mask = two_state_markov_mask(
+                self._rng, episode_length, self.duty_cycle, self.mean_burst_slots
+            )
         self._band_schedule = np.full(episode_length, self.band, dtype=int)
         self._active_schedule = mask
         self._power_schedule = power_schedule_from_mask(

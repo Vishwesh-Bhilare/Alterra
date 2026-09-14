@@ -1,0 +1,32 @@
+# Timing: emitters that appear/disappear well inside the episode, not at
+# the boundaries -- tests whether the scheduler notices a threat that
+# wasn't there from t=0, using Module E1's scripted active_windows.
+emitters:
+  - kind: fixed
+    id: burst_delta
+    threat_level: 3
+    band: 55
+    duty_cycle: 0.5          # unused (active_windows overrides), kept for schema consistency
+    mean_burst_slots: 20
+    power_dbm: 15.0
+    power_jitter_std_db: 1.5
+    active_windows: [[800, 1000]]
+
+  - kind: fixed
+    id: burst_echo
+    threat_level: 2
+    band: 95
+    duty_cycle: 0.5
+    mean_burst_slots: 20
+    power_dbm: 12.0
+    power_jitter_std_db: 1.5
+    active_windows: [[1400, 1600]]
+
+  - kind: fixed
+    id: background_foxtrot
+    threat_level: 1
+    band: 20
+    duty_cycle: 0.3
+    mean_burst_slots: 40
+    power_dbm: 6.0
+    power_jitter_std_db: 2.0

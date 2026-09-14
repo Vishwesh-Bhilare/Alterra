@@ -1,0 +1,57 @@
+# Density: many overlapping emitters clustered in adjacent bands -- tests
+# prioritization under contention rather than plain coverage.
+emitters:
+  - kind: fixed
+    id: dense_a
+    threat_level: 2
+    band: 20
+    duty_cycle: 0.7
+    mean_burst_slots: 50
+    power_dbm: 10.0
+    power_jitter_std_db: 2.0
+
+  - kind: fixed
+    id: dense_b
+    threat_level: 1
+    band: 22
+    duty_cycle: 0.6
+    mean_burst_slots: 40
+    power_dbm: 8.0
+    power_jitter_std_db: 2.0
+
+  - kind: fixed
+    id: dense_c
+    threat_level: 3
+    band: 24
+    duty_cycle: 0.65
+    mean_burst_slots: 45
+    power_dbm: 14.0
+    power_jitter_std_db: 2.0
+
+  - kind: agile
+    id: dense_d
+    threat_level: 2
+    hop_bands: [21, 23, 25, 27]
+    hop_dwell_slots: 10
+    burst_duty_cycle: 0.7
+    burst_mean_slots: 30
+    power_dbm: 9.0
+    power_jitter_std_db: 2.0
+
+  - kind: fixed
+    id: dense_e
+    threat_level: 1
+    band: 28
+    duty_cycle: 0.6
+    mean_burst_slots: 35
+    power_dbm: 7.0
+    power_jitter_std_db: 2.0
+
+  - kind: fixed
+    id: dense_f
+    threat_level: 2
+    band: 30
+    duty_cycle: 0.55
+    mean_burst_slots: 40
+    power_dbm: 11.0
+    power_jitter_std_db: 2.0

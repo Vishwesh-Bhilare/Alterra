@@ -130,6 +130,15 @@ struct SchedulerHistoryEvent {
     double reward = 0.0;
 };
 
+// One emitter instance requested from the Custom Mix dialog -- each
+// instance gets its own independent band-placement range, not shared
+// across a type. See scenario_builder.build_custom_population.
+struct CustomEmitterRequest {
+    std::string archetype;
+    int bandLo = 0;
+    int bandHi = 0;
+};
+
 class PythonBridge {
 public:
     // repoRoot/configPath are the base config; modelPath is only ever
@@ -140,10 +149,23 @@ public:
                  const std::string& modelPath);
 
     // Reloads config from disk and re-applies the given manual overrides,
-    // rebuilding the environment. Call reset() afterward to start an
-    // episode under the new config. Throws PythonBridgeError on failure
-    // (e.g. an incompatible RL checkpoint if mode == Rl).
+    // rebuilding the environment (preserving whatever scenario/custom mix
+    // is currently selected). Call reset() afterward to start an episode
+    // under the new config. Throws PythonBridgeError on failure (e.g. an
+    // incompatible RL checkpoint if mode == Rl).
     void reconfigure(const ManualConfig& cfg);
+
+    // Selects the default randomized population ("" scenario). Call
+    // reset() afterward.
+    void setRandomPopulation();
+
+    // Composes a custom population from a list of individual emitter
+    // requests (see CustomEmitterRequest) instead of the default random
+    // population. Supersedes any previous scenario selection. Call
+    // reset() afterward. Throws PythonBridgeError on an unknown
+    // archetype name (see scenario_builder._archetype_catalog for valid
+    // archetype strings).
+    void setCustomComposition(const std::vector<CustomEmitterRequest>& requests, bool boostFalseAlarm);
 
     void reset(int seed);
     StepResult step();
@@ -180,6 +202,14 @@ private:
     void ensureModelLoaded();
     static std::string modeToTraditionalString(SchedulerMode mode);  // "" for Rl
 
+    // Shared by reconfigure()/setRandomPopulation()/setCustomComposition():
+    // reloads config from disk, applies lastManualConfig_'s overrides,
+    // then builds the emitter population according to isCustom_
+    // (customRequests_/customBoostFalseAlarm_ if true, else the default
+    // random population), and rebuilds env_. mode_ is set from
+    // lastManualConfig_.mode at the end.
+    void rebuildEnv();
+
     ClassificationCounts extractClassificationCounts(const py::object& dwellResult) const;
     FrequencyWindow extractFrequencyWindow(const py::object& dwellResult) const;
     SchedulerDecision extractDecisionFromInfo(const py::dict& info) const;
@@ -199,4 +229,9 @@ private:
     std::string modelPath_;
     bool modelLoaded_ = false;
     SchedulerMode mode_ = SchedulerMode::TraditionalSequential;
+
+    ManualConfig lastManualConfig_;
+    bool isCustom_ = false;
+    std::vector<CustomEmitterRequest> customRequests_;
+    bool customBoostFalseAlarm_ = false;
 };

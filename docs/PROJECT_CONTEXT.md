@@ -554,3 +554,209 @@ end-to-end** except the two items explicitly deferred to the PPO/agents
 owner in `docs/model_changes.md` (3.6 adaptive dwell, and whether retune
 cost enters the reward) — those remain open, no further simulation/GUI
 work is blocked on them.
+
+---
+
+## 17. Scripted test-scenario timing — Module E1
+
+New optional `active_windows: [[start_slot, end_slot], ...]` field on any
+manual scenario spec (`fixed`/`agile`/`periodic_scan`), parsed in
+`scenario_builder.py` (`_active_windows`) and honored by `FixedEmitter`
+and the `_ManualAgileEmitter`/`_ManualPeriodicScanEmitter` wrappers. When
+present, it replaces the usual probabilistic `two_state_markov_mask`
+(duty_cycle + mean_burst_slots) with an exact, deterministic on/off
+schedule via new `schedule_utils.windows_mask` — guarantees an emitter
+appears/disappears at a specific mid-episode slot rather than relying on
+a probabilistic roll to produce that timing. Backward compatible: absent
+field -> unchanged probabilistic behavior, existing manual scenario YAMLs
+(e.g. `manual_example.yaml`) untouched.
+
+Band-selection logic (fixed band / hop schedule / sweep schedule) is
+untouched — only the active/inactive mask computation branches.
+
+**Next (Module E2)**: the 8 scenario YAML presets, several of which will
+use `active_windows` (mid_episode_burst, silent_gap_revisit).
+
+---
+
+## 18. Scenario preset library — Module E2
+
+8 manual scenario YAMLs under `configs/scenarios/`, each targeting one
+behavior, for the GUI's scenario dropdown (Module E3):
+
+| File | Category | Tests |
+|---|---|---|
+| `mid_episode_burst.yaml` | Timing | scripted mid-episode appear/disappear (E1) |
+| `silent_gap_revisit.yaml` | Timing | revisit logic after a long staleness gap |
+| `dense_congested.yaml` | Density | prioritization under contention |
+| `sparse_single_threat.yaml` | Density | clean intercept-time case, near-uncontested |
+| `fast_hopping_evasive.yaml` | Evasion | chasing a moving target, not camping |
+| `periodic_scan_focus.yaml` | Evasion | PS's explicit periodic-scan-interception ask |
+| `high_false_alarm.yaml` | Detection Stress | resistance to false-alarm baiting |
+| `known_baseline.yaml` | (top-level) | human-eyeball sanity check, no edge cases |
+
+**New: `config_overrides` in scenario files.** `high_false_alarm.yaml`
+needed a config change (sensor.pfa_rate), not just different emitters, so
+`scenario_builder.py` gained `load_scenario_overrides(path)` (reads an
+optional top-level `config_overrides: {section: {field: value}}` block)
+and `apply_scenario_overrides(config, overrides)` (one-level-deep
+`dataclasses.replace`). Absent in the other 7 files -- fully backward
+compatible, `load_manual_scenario`'s return type/behavior unchanged.
+
+**Next (Module E3)**: nested scenario menu in the GUI (Timing/Density/
+Evasion/Detection Stress submenus + Random Population + Known-Analytic
+Baseline at top level) + `PythonBridge` wiring to actually load a chosen
+scenario's emitters *and* apply its config_overrides before `reset()`.
+
+---
+
+## 19. Scenario menu + bridge wiring — Module E3 (last of the test-case work)
+
+`PythonBridge` gained `setScenario(name)` / `scenarioName()`, backed by a
+new shared `rebuildEnv()` (both `reconfigure()` and `setScenario()` now
+call it, so the two compose correctly: switching scenarios preserves the
+last-applied manual GUI config, and changing episode length/mode
+preserves whichever scenario is currently selected). `rebuildEnv()`
+reloads config from disk, applies the manual overrides, then -- if
+`scenarioName_` is non-empty -- loads
+`configs/scenarios/<name>.yaml` via `scenario_builder`
+(`load_manual_scenario` + `load_scenario_overrides` +
+`apply_scenario_overrides` + `build_manual_population`, using a fresh
+`RNGManager(config.rng_seed)`) and passes the resulting emitters into
+`AlterraEnv(config, manual_emitters=...)`. Empty name -> unchanged
+default-random-population behavior. Constructor now routes through
+`rebuildEnv()` too instead of building the env directly, for one code
+path.
+
+`MainWindow.ui`: added a `QToolButton` ("scenarioButton",
+`InstantPopup`) next to Random Seed. `MainWindow.cpp`'s
+`buildScenarioMenu()` constructs the nested `QMenu` tree (Random
+Population + Known-Analytic Baseline at top level; Timing/Density/
+Evasion/Detection Stress as flyout submenus, one `QAction` per scenario
+file from Module E2, `slug` stored via `QAction::setData`).
+`onScenarioSelected(QAction*)` (connected to the menu's `triggered`
+signal) calls `bridge_->setScenario(slug)`, updates the button label, and
+resets the episode -- any scenario load failure is caught and logged
+rather than crashing.
+
+**All planned modules (A/B/C/D + E1/E2/E3) are now complete.** Open items
+remain only in `docs/model_changes.md` for the PPO/agents owner.
+
+---
+
+## 20. Compose-from-archetypes — Module F (lightweight custom mix, not a full sandbox)
+
+Deliberately scoped down from a free-form emitter editor: reuses the
+exact emitter definitions from the 8 scenario presets (Module E2) as a
+fixed catalog of 7 named "archetypes" (`fixed_low/medium/high`,
+`mid_episode_burst`, `silent_gap_revisit`, `fast_hopper`,
+`periodic_scanner`), and lets the user pick counts of each (0-5) plus an
+optional false-alarm-rate boost, rather than authoring raw parameters.
+
+`scenario_builder.build_custom_population(archetype_counts,
+boost_false_alarm, config, rng_manager)` clones each requested archetype's
+template N times, giving every instance a freshly randomized band/hop-set/
+sweep-start placement (via a per-instance-named RNG stream, so duplicates
+of one archetype don't collide), keeps `active_windows` verbatim on the
+two scripted-timing archetypes, and returns `(config, emitters)` -- the
+config return matters because `boost_false_alarm` applies the same
+`apply_scenario_overrides` mechanism as `high_false_alarm.yaml`.
+
+`PythonBridge::setCustomComposition(counts, boostFalseAlarm)` sets
+`scenarioName_ = "__custom__"` and a new `rebuildEnv()` branch calls the
+above; `setScenario()`'s existing YAML-loading branch and the default
+random-population path are both unchanged (three-way branch:
+`"__custom__"` / named scenario / empty).
+
+GUI: a "Custom Mix..." entry (top-level, next to Random Population) opens
+a `QDialog` (built inline in `MainWindow.cpp`, no separate `.ui` file --
+small enough not to need one) with one spin box per archetype + the
+false-alarm checkbox; OK collects non-zero counts and calls
+`setCustomComposition`, updates the scenario button label with the total
+emitter count, and resets the episode.
+
+**Explicitly not built**: free-form parameter editing (arbitrary band/
+threat/duty-cycle/power per emitter), add/remove dynamic rows, or new
+archetype authoring from the GUI -- judged not worth the additional GUI
+complexity for what it would add on top of the 8 fixed scenarios, per the
+scope discussion before starting this module. If a genuine need for
+fully custom emitter definitions comes up later, `build_manual_population`
+already accepts arbitrary spec dicts -- only the GUI-side authoring form
+would need to be built.
+
+---
+
+## 21. Custom Mix rework — per-instance band ranges, menu simplified
+
+Following the scope discussion: the 8 preset scenarios (Timing/Density/
+Evasion/Detection Stress submenus + Known-Analytic Baseline) are removed
+from the GUI menu -- only **Random Population** and **Custom Mix...**
+remain. The scenario YAML files under `configs/scenarios/` are left on
+disk untouched (only the GUI menu entries were removed, in case they're
+still wanted via a script or later).
+
+`PythonBridge`'s scenario-string mechanism (`setScenario`/`scenarioName_`)
+is replaced by a simpler `bool isCustom_` + `setRandomPopulation()` /
+`setCustomComposition(requests, boostFalseAlarm)` pair -- there's no
+longer a third "named preset" state to track.
+
+**Per-instance band ranges, not per-archetype-type.** Each emitter added
+in the Custom Mix dialog gets its own independent `[bandLo, bandHi]`
+range (`CustomEmitterRequest`), not a range shared across all copies of
+one archetype. `scenario_builder.build_custom_population` now takes a
+flat list of `{archetype, band_lo, band_hi}` requests (one per emitter
+instance) instead of `{archetype: count}`, and samples that instance's
+placement (band / hop-bands / sweep-start, depending on kind) uniformly
+within its own range, clamped to the spectrum and to whatever fits (e.g.
+an agile emitter's hop-bandset shrinks if the given range is narrower
+than its usual size; a periodic scanner's sweep start is clamped so the
+sweep still fits inside the spectrum).
+
+**Emitter-count ambiguity resolved by construction, not by syncing two
+fields.** Rather than reconciling the Simulation Configuration panel's
+"Override emitter count / Exact count" (which only ever applied to the
+random-population path) against a separate custom total, the Custom Mix
+dialog is now a dynamic per-instance row list (`+ Add Emitter` / `Remove`
+per row) -- the number of emitters *is* the number of rows, there is no
+second number to disagree with it. `setEmitterCountControlsEnabled(bool)`
+disables the config panel's count controls entirely while Custom Mix is
+active (re-enabled on switching back to Random Population), so only one
+"how many emitters" control is ever live at a time.
+
+Dialog UI: `QScrollArea` containing dynamically added/removed `QFrame`
+rows (archetype `QComboBox` + band-range `QSpinBox` pair + Remove
+button), all built inline in `onCustomMixRequested()` (no separate `.ui`
+file, consistent with the earlier version of this dialog).
+
+---
+
+## 22. "Override emitter count" removed; frequency-based range picker; Random archetype
+
+- **Removed entirely**: the "Override emitter count / Exact count" controls
+  in the Simulation Configuration panel, and their wiring
+  (`onOverrideEmittersToggled`, `setEmitterCountControlsEnabled`, and the
+  `overrideEmitterCount`/`numEmitters` fields' use in `onApplyConfig` --
+  `ManualConfig`'s fields themselves are untouched in `PythonBridge.h/.cpp`,
+  just never set from the GUI now, so `reconfigure()` always passes the
+  struct's defaults). There is now exactly one place to control emitter
+  count for the random-population path: the config file's own
+  `emitters.population.total_count_range`. `MainWindow.ui`'s `emittersForm`
+  (the QFormLayout holding those controls) was removed from `configGroup`.
+- **Custom Mix range picker now reads/writes frequency (GHz), not band
+  index.** Each row's two `QDoubleSpinBox`es are labeled "Freq range" and
+  range over the full spectrum in GHz (derived from
+  `bandStartFreqHz_`/`bandBandwidthHz_`, populated each reset from the
+  bridge); a local `freqGHzToBand` lambda converts back to a band index
+  right before building `CustomEmitterRequest`s, so
+  `scenario_builder.build_custom_population`'s band-index contract is
+  unchanged -- the unit conversion is purely a GUI-layer concern.
+- **New "Random (any type)" archetype.** Selecting it in a row's type
+  combo (slug `"random"`) makes `build_custom_population` resolve that
+  instance to a uniformly-chosen concrete archetype at build time (new
+  `_random_archetype` helper, using that instance's own placement RNG
+  stream, so it's deterministic per seed like everything else here). This
+  replaces the old "override emitter count -> random population" flow:
+  adding N rows all set to "Random" with a wide frequency range now
+  reproduces "N random emitters," fully inside Custom Mix.
+- **Dialog widened**: `900x460`, `setMinimumWidth(820)` -- previously
+  `560x420` was too narrow to show a row's controls without resizing.

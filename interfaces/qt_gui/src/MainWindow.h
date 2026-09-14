@@ -7,6 +7,7 @@
 #include "PythonBridge.h"
 
 class QTimer;
+class QAction;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -33,8 +34,8 @@ private Q_SLOTS:
     void onSpeedChanged(int value);
     void onApplyConfig();
     void onModeChanged(int index);
-    void onOverrideEmittersToggled(bool checked);
     void onTick();
+    void onScenarioSelected(QAction* action);
 
 private:
     SchedulerMode selectedMode() const;
@@ -46,6 +47,8 @@ private:
     void refreshDetectionsTable();
     void refreshStatsLabel();
     QString freqLabelForBand(int band) const;
+    void buildScenarioMenu();
+    void onCustomMixRequested();
 
     std::unique_ptr<Ui::MainWindow> ui;
     std::unique_ptr<PythonBridge> bridge_;

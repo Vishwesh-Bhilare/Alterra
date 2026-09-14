@@ -1,0 +1,16 @@
+# Detection stress: cranks sensor.pfa_rate well above default (0.02 -> 0.15)
+# via Module E2's config_overrides -- tests whether the scheduler gets
+# baited into repeatedly re-visiting empty bands that keep false-triggering.
+config_overrides:
+  sensor:
+    pfa_rate: 0.15
+
+emitters:
+  - kind: fixed
+    id: baited_mike
+    threat_level: 2
+    band: 50
+    duty_cycle: 0.4
+    mean_burst_slots: 30
+    power_dbm: 10.0
+    power_jitter_std_db: 1.5

@@ -56,3 +56,18 @@ def power_schedule_from_mask(
     if n_active:
         power[mask] = rng.normal(power_mean_dbm, power_jitter_std_db, size=n_active)
     return power
+
+
+def windows_mask(episode_length: int, windows: list[tuple[int, int]]) -> np.ndarray:
+    """Deterministic active-window mask -- unlike two_state_markov_mask,
+    this is scripted, not sampled: each [start, end) slot range in
+    `windows` is exactly active, everything else exactly inactive. Used
+    for designed test scenarios where a specific mid-episode
+    appear/disappear timing must be guaranteed, not just probable.
+    """
+    mask = np.zeros(episode_length, dtype=bool)
+    for start, end in windows:
+        start_clamped = max(0, min(start, episode_length))
+        end_clamped = max(0, min(end, episode_length))
+        mask[start_clamped:end_clamped] = True
+    return mask

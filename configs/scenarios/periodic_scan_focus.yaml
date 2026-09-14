@@ -1,0 +1,14 @@
+# Evasion: an isolated periodic-scan emitter, per the problem statement's
+# explicit callout ("approaches to intercept a periodic scan receiver
+# optimally should be outlined") -- little else competing for attention.
+emitters:
+  - kind: periodic_scan
+    id: sweep_lima
+    threat_level: 2
+    sweep_start_band: 45
+    sweep_width: 14
+    dwell_slots: 10
+    duty_cycle: 0.8
+    burst_mean_slots: 20
+    power_dbm: 12.0
+    power_jitter_std_db: 1.5

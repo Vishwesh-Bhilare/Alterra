@@ -9,14 +9,12 @@ PythonBridge::PythonBridge(const std::string& repoRoot,
     py::module_ sys = py::module_::import("sys");
     sys.attr("path").attr("insert")(0, repoRoot_);
 
-    py::module_ configLoader = py::module_::import("simulation.utils.config_loader");
-    config_ = configLoader.attr("load_config")(configPath_);
-
-    py::module_ envModule = py::module_::import("simulation.environment");
-    env_ = envModule.attr("AlterraEnv")(config_);
-
     metricsModule_ = py::module_::import("simulation.metrics");
     tracker_ = metricsModule_.attr("MetricsTracker")();
+
+    lastManualConfig_ = ManualConfig{};
+    mode_ = lastManualConfig_.mode;
+    rebuildEnv();
 
     // Default mode is a traditional scan -- always safe to start in,
     // regardless of whether the configured RL checkpoint is still
@@ -51,27 +49,76 @@ void PythonBridge::ensureModelLoaded() {
     }
 }
 
+void PythonBridge::rebuildEnv() {
+    try {
+        py::module_ configLoader = py::module_::import("simulation.utils.config_loader");
+        py::object freshConfig = configLoader.attr("load_config")(configPath_);
+
+        const ManualConfig& cfg = lastManualConfig_;
+        std::string traditionalMode = modeToTraditionalString(cfg.mode);
+        py::object numEmittersArg =
+            cfg.overrideEmitterCount ? py::object(py::cast(cfg.numEmitters)) : py::none();
+        py::object modeArg =
+            (cfg.mode != SchedulerMode::Rl) ? py::object(py::cast(traditionalMode)) : py::none();
+
+        freshConfig = configLoader.attr("apply_overrides")(
+            freshConfig,
+            py::arg("episode_length_slots") = py::cast(cfg.episodeLengthSlots),
+            py::arg("num_emitters") = numEmittersArg,
+            py::arg("traditional_scan_mode") = modeArg,
+            py::arg("traditional_dwell_slots") = py::cast(cfg.traditionalDwellSlots)
+        );
+
+        py::object manualEmitters = py::none();
+
+        if (isCustom_) {
+            py::module_ scenarioBuilder = py::module_::import("simulation.emitters.scenario_builder");
+            py::module_ rngModule = py::module_::import("simulation.utils.rng");
+            py::object rngManager = rngModule.attr("RNGManager")(freshConfig.attr("rng_seed"));
+
+            py::list requestList;
+            for (const auto& req : customRequests_) {
+                py::dict d;
+                d["archetype"] = req.archetype;
+                d["band_lo"] = req.bandLo;
+                d["band_hi"] = req.bandHi;
+                requestList.append(d);
+            }
+
+            py::tuple result = scenarioBuilder.attr("build_custom_population")(
+                requestList, customBoostFalseAlarm_, freshConfig, rngManager);
+            freshConfig = result[0];
+            manualEmitters = result[1];
+        }
+
+        config_ = freshConfig;
+        py::module_ envModule = py::module_::import("simulation.environment");
+        env_ = envModule.attr("AlterraEnv")(config_, py::arg("manual_emitters") = manualEmitters);
+
+        mode_ = cfg.mode;
+        driver_ = py::none();  // stale -- will be rebuilt on next reset()
+    } catch (const py::error_already_set& e) {
+        throw PythonBridgeError(
+            std::string("Failed to build environment (custom=") +
+            (isCustom_ ? "true" : "false") + "): " + e.what());
+    }
+}
+
 void PythonBridge::reconfigure(const ManualConfig& cfg) {
-    py::module_ configLoader = py::module_::import("simulation.utils.config_loader");
-    py::object freshConfig = configLoader.attr("load_config")(configPath_);
+    lastManualConfig_ = cfg;
+    rebuildEnv();
+}
 
-    std::string traditionalMode = modeToTraditionalString(cfg.mode);
-    py::object numEmittersArg = cfg.overrideEmitterCount ? py::object(py::cast(cfg.numEmitters)) : py::none();
-    py::object modeArg = (cfg.mode != SchedulerMode::Rl) ? py::object(py::cast(traditionalMode)) : py::none();
+void PythonBridge::setRandomPopulation() {
+    isCustom_ = false;
+    rebuildEnv();
+}
 
-    config_ = configLoader.attr("apply_overrides")(
-        freshConfig,
-        py::arg("episode_length_slots") = py::cast(cfg.episodeLengthSlots),
-        py::arg("num_emitters") = numEmittersArg,
-        py::arg("traditional_scan_mode") = modeArg,
-        py::arg("traditional_dwell_slots") = py::cast(cfg.traditionalDwellSlots)
-    );
-
-    py::module_ envModule = py::module_::import("simulation.environment");
-    env_ = envModule.attr("AlterraEnv")(config_);
-
-    mode_ = cfg.mode;
-    driver_ = py::none();  // stale -- will be rebuilt on next reset()
+void PythonBridge::setCustomComposition(const std::vector<CustomEmitterRequest>& requests, bool boostFalseAlarm) {
+    isCustom_ = true;
+    customRequests_ = requests;
+    customBoostFalseAlarm_ = boostFalseAlarm;
+    rebuildEnv();
 }
 
 void PythonBridge::reset(int seed) {

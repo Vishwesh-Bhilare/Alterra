@@ -7,6 +7,19 @@
 #include <QTimer>
 #include <QTableWidgetItem>
 #include <QColor>
+#include <QMenu>
+#include <QAction>
+#include <QDialog>
+#include <QDoubleSpinBox>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialogButtonBox>
+#include <QScrollArea>
+#include <QLabel>
+#include <QPushButton>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFrame>
 #include <algorithm>
 
 namespace {
@@ -55,8 +68,6 @@ MainWindow::MainWindow(const std::string& repoRoot,
     bridge_ = std::make_unique<PythonBridge>(repoRoot, configPath, modelPath);
 
     ui->modeCombo->setCurrentIndex(1);  // Traditional Sequential -- always safe to start in
-    ui->numEmittersSpin->setValue(
-        (bridge_->defaultMinEmitters() + bridge_->defaultMaxEmitters()) / 2);
     ui->episodeLengthSpin->setValue(bridge_->defaultEpisodeLengthSlots());
 
     connect(ui->startStopButton, &QPushButton::clicked, this, &MainWindow::onStartStop);
@@ -67,8 +78,8 @@ MainWindow::MainWindow(const std::string& repoRoot,
     connect(ui->applyConfigButton, &QPushButton::clicked, this, &MainWindow::onApplyConfig);
     connect(ui->modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onModeChanged);
-    connect(ui->overrideEmittersCheck, &QCheckBox::toggled,
-            this, &MainWindow::onOverrideEmittersToggled);
+
+    buildScenarioMenu();
 
     timer_ = new QTimer(this);
     connect(timer_, &QTimer::timeout, this, &MainWindow::onTick);
@@ -79,6 +90,171 @@ MainWindow::MainWindow(const std::string& repoRoot,
 }
 
 MainWindow::~MainWindow() = default;
+
+void MainWindow::buildScenarioMenu() {
+    auto* menu = new QMenu(ui->scenarioButton);
+
+    QAction* randomAction = menu->addAction("Random Population");
+    randomAction->setData("__random__");
+
+    QAction* customAction = menu->addAction("Custom Mix...");
+    customAction->setData("__custom_dialog__");
+
+    ui->scenarioButton->setMenu(menu);
+    connect(menu, &QMenu::triggered, this, &MainWindow::onScenarioSelected);
+}
+
+void MainWindow::onScenarioSelected(QAction* action) {
+    QString slug = action->data().toString();
+    QString label = action->text();
+
+    if (slug == "__custom_dialog__") {
+        onCustomMixRequested();
+        return;
+    }
+
+    try {
+        bridge_->setRandomPopulation();
+    } catch (const PythonBridgeError& e) {
+        ui->log->appendPlainText(QString("--- Scenario error: %1 ---").arg(e.what()));
+        return;
+    }
+
+    ui->scenarioButton->setText("Scenario: " + label);
+    ui->log->appendPlainText(QString("--- Scenario selected: %1 ---").arg(label));
+    onResetEpisode();
+}
+
+void MainWindow::onCustomMixRequested() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Custom Mix — Compose Scenario");
+    dialog.resize(900, 460);
+    dialog.setMinimumWidth(820);
+
+    const std::vector<std::pair<QString, QString>> archetypes = {
+        {"random", "Random (any type)"},
+        {"fixed_low", "Fixed — Low Threat"},
+        {"fixed_medium", "Fixed — Medium Threat"},
+        {"fixed_high", "Fixed — High Threat"},
+        {"mid_episode_burst", "Mid-Episode Burst"},
+        {"silent_gap_revisit", "Silent Gap + Revisit"},
+        {"fast_hopper", "Fast Hopper (Evasive)"},
+        {"periodic_scanner", "Periodic Scanner"},
+    };
+
+    double specStartHz = bandStartFreqHz_;
+    double specEndHz = bandStartFreqHz_ + bridge_->numBands() * bandBandwidthHz_;
+    double specStartGHz = specStartHz / 1e9;
+    double specEndGHz = specEndHz / 1e9;
+
+    auto freqGHzToBand = [this](double freqGHz) {
+        double freqHz = freqGHz * 1e9;
+        int band = static_cast<int>((freqHz - bandStartFreqHz_) / bandBandwidthHz_);
+        return std::clamp(band, 0, bridge_->numBands() - 1);
+    };
+
+    auto* mainLayout = new QVBoxLayout(&dialog);
+
+    auto* scrollArea = new QScrollArea(&dialog);
+    scrollArea->setWidgetResizable(true);
+    auto* rowsContainer = new QWidget();
+    auto* rowsLayout = new QVBoxLayout(rowsContainer);
+    rowsLayout->addStretch();
+    scrollArea->setWidget(rowsContainer);
+    mainLayout->addWidget(scrollArea);
+
+    std::vector<QWidget*> rows;
+
+    auto addRow = [&]() {
+        auto* row = new QFrame();
+        row->setFrameShape(QFrame::StyledPanel);
+        auto* rowLayout = new QHBoxLayout(row);
+
+        auto* combo = new QComboBox(row);
+        combo->setObjectName("archetypeCombo");
+        for (const auto& entry : archetypes) combo->addItem(entry.second, entry.first);
+        rowLayout->addWidget(new QLabel("Type:", row));
+        rowLayout->addWidget(combo, 2);
+
+        auto* loSpin = new QDoubleSpinBox(row);
+        loSpin->setObjectName("loSpin");
+        loSpin->setDecimals(3);
+        loSpin->setSuffix(" GHz");
+        loSpin->setRange(specStartGHz, specEndGHz);
+        loSpin->setSingleStep(bandBandwidthHz_ / 1e9);
+        loSpin->setValue(specStartGHz);
+
+        auto* hiSpin = new QDoubleSpinBox(row);
+        hiSpin->setObjectName("hiSpin");
+        hiSpin->setDecimals(3);
+        hiSpin->setSuffix(" GHz");
+        hiSpin->setRange(specStartGHz, specEndGHz);
+        hiSpin->setSingleStep(bandBandwidthHz_ / 1e9);
+        hiSpin->setValue(specEndGHz);
+
+        rowLayout->addWidget(new QLabel("Freq range:", row));
+        rowLayout->addWidget(loSpin, 1);
+        rowLayout->addWidget(new QLabel("–", row));
+        rowLayout->addWidget(hiSpin, 1);
+
+        auto* removeButton = new QPushButton("Remove", row);
+        rowLayout->addWidget(removeButton);
+
+        connect(removeButton, &QPushButton::clicked, &dialog, [&rows, rowsLayout, row]() {
+            rowsLayout->removeWidget(row);
+            rows.erase(std::remove(rows.begin(), rows.end(), row), rows.end());
+            row->deleteLater();
+        });
+
+        rowsLayout->insertWidget(rowsLayout->count() - 1, row);
+        rows.push_back(row);
+    };
+
+    auto* addButton = new QPushButton("+ Add Emitter", &dialog);
+    connect(addButton, &QPushButton::clicked, &dialog, [&addRow]() { addRow(); });
+    mainLayout->addWidget(addButton);
+
+    auto* boostCheck = new QCheckBox("Boost false-alarm rate", &dialog);
+    mainLayout->addWidget(boostCheck);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    mainLayout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    addRow();  // start with one row for convenience
+
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    std::vector<CustomEmitterRequest> requests;
+    for (QWidget* row : rows) {
+        auto* combo = row->findChild<QComboBox*>("archetypeCombo");
+        auto* loSpin = row->findChild<QDoubleSpinBox*>("loSpin");
+        auto* hiSpin = row->findChild<QDoubleSpinBox*>("hiSpin");
+
+        CustomEmitterRequest req;
+        req.archetype = combo->currentData().toString().toStdString();
+        req.bandLo = freqGHzToBand(loSpin->value());
+        req.bandHi = freqGHzToBand(hiSpin->value());
+        requests.push_back(req);
+    }
+
+    if (requests.empty()) {
+        ui->log->appendPlainText("--- Custom Mix: no emitters added, nothing built ---");
+        return;
+    }
+
+    try {
+        bridge_->setCustomComposition(requests, boostCheck->isChecked());
+    } catch (const PythonBridgeError& e) {
+        ui->log->appendPlainText(QString("--- Custom Mix error: %1 ---").arg(e.what()));
+        return;
+    }
+
+    ui->scenarioButton->setText(QString("Scenario: Custom Mix (%1 emitters)").arg(requests.size()));
+    ui->log->appendPlainText(QString("--- Custom Mix built: %1 emitters ---").arg(requests.size()));
+    onResetEpisode();
+}
 
 SchedulerMode MainWindow::selectedMode() const {
     switch (ui->modeCombo->currentIndex()) {
@@ -95,15 +271,9 @@ void MainWindow::onModeChanged(int /*index*/) {
     ui->traditionalDwellLabel->setEnabled(isTraditional);
 }
 
-void MainWindow::onOverrideEmittersToggled(bool checked) {
-    ui->numEmittersSpin->setEnabled(checked);
-}
-
 void MainWindow::onApplyConfig() {
     ManualConfig cfg;
     cfg.episodeLengthSlots = ui->episodeLengthSpin->value();
-    cfg.overrideEmitterCount = ui->overrideEmittersCheck->isChecked();
-    cfg.numEmitters = ui->numEmittersSpin->value();
     cfg.mode = selectedMode();
     cfg.traditionalDwellSlots = ui->traditionalDwellSpin->value();
 
@@ -188,6 +358,8 @@ void MainWindow::onResetEpisode() {
     totalMisses_ = 0;
     totalFalseAlarms_ = 0;
     totalCorrectRejects_ = 0;
+
+    refreshPriorityTable();
 
     ui->log->appendPlainText(QString("--- Episode reset (seed=%1, mode=%2) ---")
         .arg(seed).arg(ui->modeCombo->currentText()));
