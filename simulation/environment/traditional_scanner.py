@@ -112,8 +112,14 @@ class TraditionalScanDriver:
         self.scanner = TraditionalScanner(env.config.spectrum.num_bands, resolved_dwell, mode=mode, rng=rng)
         self._t = 0
 
-    def reset(self, seed: int) -> None:
-        self.env.reset(seed=seed)
+    def reset(self, seed: int, options: dict | None = None) -> None:
+        # `options` (e.g. {"manual_emitters": [...]}) is passed straight
+        # through to env.reset() -- lets a caller (PythonBridge) supply a
+        # freshly-rerolled custom population, keyed by this same seed,
+        # instead of always reusing whatever was built at env-construction
+        # time. Defaults to None for full backward compatibility with
+        # existing callers (e.g. run_traditional_scan below).
+        self.env.reset(seed=seed, options=options)
         self.scanner.reset()
         self._t = 0
 

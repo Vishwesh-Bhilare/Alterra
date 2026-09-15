@@ -176,6 +176,16 @@ public:
     // fetched on demand (not part of every step's StepResult). n = -1
     // means "all available" for recentEvents/recentHits.
     std::vector<BandPriority> bandPriorities();
+
+    // Debugging aid: one summary line per currently-loaded emitter
+    // (id, kind, threat level, and the distinct band(s) its schedule
+    // actually touches -- derived straight from _band_schedule, so it
+    // reflects reality regardless of archetype/placement logic). Call
+    // after reset() to see exactly what population that episode got,
+    // e.g. to confirm "1 emitter selected" really only produced one
+    // emitter object (a multi-band spread from a single agile/periodic
+    // emitter is expected; from a fixed emitter it would not be).
+    std::vector<std::string> emitterRoster();
     std::vector<SchedulerHistoryEvent> recentEvents(int n = -1);
     std::vector<SchedulerHistoryEvent> recentHits(int n = -1);
 
@@ -209,6 +219,7 @@ private:
     // random population), and rebuilds env_. mode_ is set from
     // lastManualConfig_.mode at the end.
     void rebuildEnv();
+    py::list buildCustomRequestList() const;
 
     ClassificationCounts extractClassificationCounts(const py::object& dwellResult) const;
     FrequencyWindow extractFrequencyWindow(const py::object& dwellResult) const;

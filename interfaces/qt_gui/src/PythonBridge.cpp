@@ -1,5 +1,6 @@
 #include "PythonBridge.h"
 
+#include <algorithm>
 #include <cstring>
 
 PythonBridge::PythonBridge(const std::string& repoRoot,
@@ -56,51 +57,32 @@ void PythonBridge::rebuildEnv() {
 
         const ManualConfig& cfg = lastManualConfig_;
         std::string traditionalMode = modeToTraditionalString(cfg.mode);
-        py::object numEmittersArg =
-            cfg.overrideEmitterCount ? py::object(py::cast(cfg.numEmitters)) : py::none();
         py::object modeArg =
             (cfg.mode != SchedulerMode::Rl) ? py::object(py::cast(traditionalMode)) : py::none();
 
         freshConfig = configLoader.attr("apply_overrides")(
             freshConfig,
             py::arg("episode_length_slots") = py::cast(cfg.episodeLengthSlots),
-            py::arg("num_emitters") = numEmittersArg,
+            py::arg("num_emitters") = py::none(),
             py::arg("traditional_scan_mode") = modeArg,
             py::arg("traditional_dwell_slots") = py::cast(cfg.traditionalDwellSlots)
         );
 
-        py::object manualEmitters = py::none();
-
-        if (isCustom_) {
-            py::module_ scenarioBuilder = py::module_::import("simulation.emitters.scenario_builder");
-            py::module_ rngModule = py::module_::import("simulation.utils.rng");
-            py::object rngManager = rngModule.attr("RNGManager")(freshConfig.attr("rng_seed"));
-
-            py::list requestList;
-            for (const auto& req : customRequests_) {
-                py::dict d;
-                d["archetype"] = req.archetype;
-                d["band_lo"] = req.bandLo;
-                d["band_hi"] = req.bandHi;
-                requestList.append(d);
-            }
-
-            py::tuple result = scenarioBuilder.attr("build_custom_population")(
-                requestList, customBoostFalseAlarm_, freshConfig, rngManager);
-            freshConfig = result[0];
-            manualEmitters = result[1];
-        }
-
         config_ = freshConfig;
         py::module_ envModule = py::module_::import("simulation.environment");
-        env_ = envModule.attr("AlterraEnv")(config_, py::arg("manual_emitters") = manualEmitters);
+        // manual_emitters intentionally NOT supplied here, for either the
+        // random-population path OR the custom-mix path: the population
+        // is now always (re)built fresh inside reset(seed), keyed by that
+        // seed -- see reset() below. This is what makes changing the Seed
+        // control actually re-randomize a custom mix's band placement,
+        // which it previously did not (population was frozen at
+        // rebuildEnv() time using a fixed, seed-independent RNG).
+        env_ = envModule.attr("AlterraEnv")(config_);
 
         mode_ = cfg.mode;
         driver_ = py::none();  // stale -- will be rebuilt on next reset()
     } catch (const py::error_already_set& e) {
-        throw PythonBridgeError(
-            std::string("Failed to build environment (custom=") +
-            (isCustom_ ? "true" : "false") + "): " + e.what());
+        throw PythonBridgeError(std::string("Failed to build environment: ") + e.what());
     }
 }
 
@@ -121,23 +103,61 @@ void PythonBridge::setCustomComposition(const std::vector<CustomEmitterRequest>&
     rebuildEnv();
 }
 
-void PythonBridge::reset(int seed) {
-    if (mode_ == SchedulerMode::Rl) {
-        ensureModelLoaded();
-        py::tuple result = env_.attr("reset")(py::arg("seed") = seed);
-        obs_ = result[0];
-    } else {
-        py::module_ scannerModule = py::module_::import("simulation.environment.traditional_scanner");
-        std::string modeStr = modeToTraditionalString(mode_);
-        driver_ = scannerModule.attr("TraditionalScanDriver")(
-            env_,
-            py::arg("mode") = modeStr,
-            py::arg("dwell_slots") = py::none(),  // use whatever's in config_.comparison.traditional_scan
-            py::arg("seed") = seed
-        );
-        driver_.attr("reset")(seed);
+py::list PythonBridge::buildCustomRequestList() const {
+    py::list requestList;
+    for (const auto& req : customRequests_) {
+        py::dict d;
+        d["archetype"] = req.archetype;
+        d["band_lo"] = req.bandLo;
+        d["band_hi"] = req.bandHi;
+        requestList.append(d);
     }
-    tracker_ = metricsModule_.attr("MetricsTracker")();
+    return requestList;
+}
+
+void PythonBridge::reset(int seed) {
+    try {
+        py::object optionsArg = py::none();
+
+        if (isCustom_) {
+            py::module_ scenarioBuilder = py::module_::import("simulation.emitters.scenario_builder");
+            py::module_ rngModule = py::module_::import("simulation.utils.rng");
+            // Keyed off the actual episode seed now (not config.rng_seed) --
+            // this is the fix: every reset() with a different seed rerolls
+            // both which concrete archetype "Random" resolves to AND where
+            // every emitter lands within its chosen band range.
+            py::object rngManager = rngModule.attr("RNGManager")(seed);
+
+            py::list requestList = buildCustomRequestList();
+            py::tuple result = scenarioBuilder.attr("build_custom_population")(
+                requestList, customBoostFalseAlarm_, config_, rngManager);
+            config_ = result[0];  // pfa-boost reapply is idempotent, harmless
+            py::object emitters = result[1];
+
+            py::dict options;
+            options["manual_emitters"] = emitters;
+            optionsArg = options;
+        }
+
+        if (mode_ == SchedulerMode::Rl) {
+            ensureModelLoaded();
+            py::tuple result = env_.attr("reset")(py::arg("seed") = seed, py::arg("options") = optionsArg);
+            obs_ = result[0];
+        } else {
+            py::module_ scannerModule = py::module_::import("simulation.environment.traditional_scanner");
+            std::string modeStr = modeToTraditionalString(mode_);
+            driver_ = scannerModule.attr("TraditionalScanDriver")(
+                env_,
+                py::arg("mode") = modeStr,
+                py::arg("dwell_slots") = py::none(),  // use whatever's in config_.comparison.traditional_scan
+                py::arg("seed") = seed
+            );
+            driver_.attr("reset")(seed, py::arg("options") = optionsArg);
+        }
+        tracker_ = metricsModule_.attr("MetricsTracker")();
+    } catch (const py::error_already_set& e) {
+        throw PythonBridgeError(std::string("Failed to reset episode: ") + e.what());
+    }
 }
 
 ClassificationCounts PythonBridge::extractClassificationCounts(const py::object& dwellResult) const {
@@ -340,6 +360,44 @@ std::vector<SchedulerHistoryEvent> PythonBridge::recentHits(int n) {
         result.push_back(he);
     }
     return result;
+}
+
+std::vector<std::string> PythonBridge::emitterRoster() {
+    std::vector<std::string> lines;
+    py::list emitters = env_.attr("_emitters");
+
+    for (py::handle item : emitters) {
+        py::object e = py::reinterpret_borrow<py::object>(item);
+        std::string id = e.attr("emitter_id").cast<std::string>();
+        std::string kind = e.attr("kind").cast<std::string>();
+        int threat = e.attr("threat_level").cast<int>();
+
+        py::array_t<int64_t> bandSchedule =
+            e.attr("_band_schedule").attr("astype")("int64").cast<py::array_t<int64_t>>();
+        auto buf = bandSchedule.request();
+        const int64_t* ptr = static_cast<const int64_t*>(buf.ptr);
+        std::vector<int64_t> uniqueBands(ptr, ptr + buf.shape[0]);
+        std::sort(uniqueBands.begin(), uniqueBands.end());
+        uniqueBands.erase(std::unique(uniqueBands.begin(), uniqueBands.end()), uniqueBands.end());
+
+        std::string bandsStr;
+        if (uniqueBands.size() == 1) {
+            bandsStr = "band " + std::to_string(uniqueBands[0]);
+        } else if (uniqueBands.size() <= 6) {
+            bandsStr = "bands ";
+            for (size_t i = 0; i < uniqueBands.size(); ++i) {
+                if (i) bandsStr += ",";
+                bandsStr += std::to_string(uniqueBands[i]);
+            }
+        } else {
+            bandsStr = "bands " + std::to_string(uniqueBands.front()) + "-" +
+                       std::to_string(uniqueBands.back()) +
+                       " (" + std::to_string(uniqueBands.size()) + " distinct)";
+        }
+
+        lines.push_back(id + " [" + kind + ", threat " + std::to_string(threat) + "]: " + bandsStr);
+    }
+    return lines;
 }
 
 std::vector<double> PythonBridge::noiseFloorDbm() {

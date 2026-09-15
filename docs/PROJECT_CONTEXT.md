@@ -760,3 +760,47 @@ file, consistent with the earlier version of this dialog).
   reproduces "N random emitters," fully inside Custom Mix.
 - **Dialog widened**: `900x460`, `setMinimumWidth(820)` -- previously
   `560x420` was too narrow to show a row's controls without resizing.
+
+---
+
+## 23. Bug fixes: Custom Mix wasn't reseeding; added emitter roster logging
+
+**Bug found: Custom Mix placement was seed-independent.** Population
+construction lived in `rebuildEnv()` (triggered once, when Custom Mix is
+applied), using `RNGManager(config.rng_seed)` -- the YAML's fixed
+`rng_seed: 42`, never the GUI's Seed control. Every "Apply & Reset
+Episode," every "Random Seed" click, and every plain "Reset Episode" all
+produced the *exact same* band placements and the *exact same* concrete
+archetype resolution for any "Random" rows, forever.
+
+**Fix**: population construction moved out of `rebuildEnv()` and into
+`reset(seed)`, keyed by that call's actual `seed` argument --
+`RNGManager(seed)` instead of `RNGManager(config.rng_seed)`. This mirrors
+how the default random-population path already worked correctly (it
+builds inside `AlterraEnv.reset()`, keyed by the reset seed). `rebuildEnv()`
+now always constructs `AlterraEnv(config_)` with no `manual_emitters` at
+all (`_static_manual_emitters` stays `None` for both paths); `reset()`
+supplies `options={"manual_emitters": [...]}` freshly each call when
+`isCustom_` is true, `None` otherwise (unaffected -- default population
+still self-builds via `build_population`).
+
+**Required a small `TraditionalScanDriver` change**: its `reset(seed)`
+previously hardcoded `self.env.reset(seed=seed)` with no way to pass
+`options` through, so Custom Mix under a Traditional scheduler couldn't
+reroll either. `reset()` now takes an optional `options: dict | None = None`
+param, passed straight through to `env.reset()` -- default `None` keeps
+`run_traditional_scan`'s own direct usage unaffected.
+
+**New debugging aid, not a bug fix**: `PythonBridge::emitterRoster()`
+reads `env._emitters` directly and reports each emitter's id, kind,
+threat level, and the distinct band(s) its `_band_schedule` actually
+touches (a relied-upon field per every emitter's constructor contract in
+`base_emitter.py`, not archetype-specific, so this works for any emitter
+type without guessing at class-specific attributes). `onResetEpisode()`
+now logs one line per emitter after every reset. This directly answers
+"did N selected emitters really produce N emitter objects" without
+having to eyeball the spectrogram -- a Fast Hopper or Periodic Scanner
+legitimately touching 5-14 distinct bands from one emitter object is
+expected and will show as one roster line with multiple bands listed; a
+Fixed-type emitter showing more than one band would now be an obvious,
+immediately-visible bug.

@@ -363,6 +363,9 @@ void MainWindow::onResetEpisode() {
 
     ui->log->appendPlainText(QString("--- Episode reset (seed=%1, mode=%2) ---")
         .arg(seed).arg(ui->modeCombo->currentText()));
+    for (const std::string& line : bridge_->emitterRoster()) {
+        ui->log->appendPlainText("    " + QString::fromStdString(line));
+    }
     ui->signalLabel->setText("Signal: -");
     updateMetricsLabel();
 }
