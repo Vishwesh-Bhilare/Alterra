@@ -1,6 +1,5 @@
 #include "PythonBridge.h"
 
-#include <algorithm>
 #include <cstring>
 
 PythonBridge::PythonBridge(const std::string& repoRoot,
@@ -17,9 +16,34 @@ PythonBridge::PythonBridge(const std::string& repoRoot,
     mode_ = lastManualConfig_.mode;
     rebuildEnv();
 
+    // One-time migration: if nothing is registered yet, and the legacy
+    // bundled checkpoint path actually exists on disk, register it so
+    // Adaptive mode has something to select out of the box. If models
+    // already exist (e.g. a teammate's imports), default to the first one.
+    try {
+        py::module_ registry = py::module_::import("model.agents.model_registry");
+        py::list existing = registry.attr("list_models")(repoRoot_);
+
+        if (py::len(existing) == 0) {
+            py::module_ osPathModule = py::module_::import("os.path");
+            bool exists = osPathModule.attr("exists")(modelPath_).cast<bool>();
+            if (exists) {
+                py::dict entry = registry.attr("register_model")(
+                    repoRoot_, modelPath_, "Default (bundled checkpoint)", "PPO");
+                activeModelId_ = entry["id"].cast<std::string>();
+            }
+        } else {
+            py::dict first = py::reinterpret_borrow<py::dict>(existing[0]);
+            activeModelId_ = first["id"].cast<std::string>();
+        }
+    } catch (const py::error_already_set&) {
+        // Non-fatal -- Adaptive mode will just report "no model selected"
+        // until the user imports one via the GUI.
+    }
+
     // Default mode is a traditional scan -- always safe to start in,
-    // regardless of whether the configured RL checkpoint is still
-    // compatible with the current environment (see ensureModelLoaded()).
+    // regardless of whether any RL checkpoint is registered/compatible
+    // (see ensureModelLoaded()).
     reset(0);
 }
 
@@ -36,17 +60,26 @@ std::string PythonBridge::modeToTraditionalString(SchedulerMode mode) {
 }
 
 void PythonBridge::ensureModelLoaded() {
-    if (modelLoaded_) return;
+    if (modelLoaded_ && loadedModelId_ == activeModelId_) return;
+
+    if (activeModelId_.empty()) {
+        throw PythonBridgeError(
+            "No RL model selected. Use 'Import Model...' to add one, then pick it from the "
+            "RL Model dropdown.");
+    }
+
     try {
-        py::module_ sb3 = py::module_::import("stable_baselines3");
-        model_ = sb3.attr("PPO").attr("load")(modelPath_);
+        py::module_ policyRunnerModule = py::module_::import("model.agents.policy_runner");
+        model_ = policyRunnerModule.attr("load_model")(repoRoot_, activeModelId_);
+        loadedModelId_ = activeModelId_;
         modelLoaded_ = true;
     } catch (const py::error_already_set& e) {
+        modelLoaded_ = false;
         throw PythonBridgeError(
-            "Failed to load RL model at '" + modelPath_ + "': " + e.what() +
-            "\nThis usually means the checkpoint's observation/action space doesn't "
-            "match the current environment (e.g. it predates an observation upgrade). "
-            "Falling back to a traditional scan mode is safe.");
+            "Failed to load RL model '" + activeModelId_ + "': " + e.what() +
+            "\nThis usually means the checkpoint's observation/action space doesn't match "
+            "the current environment, or (for a RecurrentPPO checkpoint) sb3-contrib isn't "
+            "installed. Falling back to a traditional scan mode is safe.");
     }
 }
 
@@ -70,13 +103,8 @@ void PythonBridge::rebuildEnv() {
 
         config_ = freshConfig;
         py::module_ envModule = py::module_::import("simulation.environment");
-        // manual_emitters intentionally NOT supplied here, for either the
-        // random-population path OR the custom-mix path: the population
-        // is now always (re)built fresh inside reset(seed), keyed by that
-        // seed -- see reset() below. This is what makes changing the Seed
-        // control actually re-randomize a custom mix's band placement,
-        // which it previously did not (population was frozen at
-        // rebuildEnv() time using a fixed, seed-independent RNG).
+        // manual_emitters intentionally NOT supplied here -- population is
+        // always (re)built fresh inside reset(seed), keyed by that seed.
         env_ = envModule.attr("AlterraEnv")(config_);
 
         mode_ = cfg.mode;
@@ -103,6 +131,43 @@ void PythonBridge::setCustomComposition(const std::vector<CustomEmitterRequest>&
     rebuildEnv();
 }
 
+std::vector<RegisteredModel> PythonBridge::listModels() {
+    py::module_ registry = py::module_::import("model.agents.model_registry");
+    py::list entries = registry.attr("list_models")(repoRoot_);
+
+    std::vector<RegisteredModel> result;
+    for (py::handle item : entries) {
+        py::dict d = py::reinterpret_borrow<py::dict>(item);
+        RegisteredModel m;
+        m.id = d["id"].cast<std::string>();
+        m.label = d["label"].cast<std::string>();
+        m.algoClass = d["algo_class"].cast<std::string>();
+        result.push_back(m);
+    }
+    return result;
+}
+
+RegisteredModel PythonBridge::importModel(const std::string& sourcePath, const std::string& label, const std::string& algoClass) {
+    try {
+        py::module_ registry = py::module_::import("model.agents.model_registry");
+        py::dict entry = registry.attr("register_model")(repoRoot_, sourcePath, label, algoClass);
+
+        RegisteredModel m;
+        m.id = entry["id"].cast<std::string>();
+        m.label = entry["label"].cast<std::string>();
+        m.algoClass = entry["algo_class"].cast<std::string>();
+        return m;
+    } catch (const py::error_already_set& e) {
+        throw PythonBridgeError(std::string("Failed to import model: ") + e.what());
+    }
+}
+
+void PythonBridge::setActiveModel(const std::string& modelId) {
+    activeModelId_ = modelId;
+    // Lazily (re)loaded on the next ensureModelLoaded() call (inside
+    // reset()), same pattern as the original single-model version.
+}
+
 py::list PythonBridge::buildCustomRequestList() const {
     py::list requestList;
     for (const auto& req : customRequests_) {
@@ -122,10 +187,6 @@ void PythonBridge::reset(int seed) {
         if (isCustom_) {
             py::module_ scenarioBuilder = py::module_::import("simulation.emitters.scenario_builder");
             py::module_ rngModule = py::module_::import("simulation.utils.rng");
-            // Keyed off the actual episode seed now (not config.rng_seed) --
-            // this is the fix: every reset() with a different seed rerolls
-            // both which concrete archetype "Random" resolves to AND where
-            // every emitter lands within its chosen band range.
             py::object rngManager = rngModule.attr("RNGManager")(seed);
 
             py::list requestList = buildCustomRequestList();
@@ -141,6 +202,7 @@ void PythonBridge::reset(int seed) {
 
         if (mode_ == SchedulerMode::Rl) {
             ensureModelLoaded();
+            model_.attr("reset")();  // clears recurrent hidden state, no-op for plain PPO
             py::tuple result = env_.attr("reset")(py::arg("seed") = seed, py::arg("options") = optionsArg);
             obs_ = result[0];
         } else {
@@ -200,8 +262,7 @@ StepResult PythonBridge::step() {
     StepResult r;
 
     if (mode_ == SchedulerMode::Rl) {
-        py::tuple prediction = model_.attr("predict")(obs_, py::arg("deterministic") = true);
-        py::object action = prediction[0];
+        py::object action = model_.attr("predict")(obs_);
 
         py::tuple stepped = env_.attr("step")(action);
         obs_ = stepped[0];
@@ -248,6 +309,82 @@ StepResult PythonBridge::step() {
 
     r.episodeLength = env_.attr("episode_length").cast<int>();
     return r;
+}
+
+std::vector<ComparisonRow> PythonBridge::runComparison(
+    int seed, const std::vector<std::string>& modelIds, bool includeSequential, bool includeBalancedRandom) {
+    py::module_ comparisonModule = py::module_::import("simulation.environment.comparison");
+    py::module_ policyRunnerModule = py::module_::import("model.agents.policy_runner");
+    py::module_ registryModule = py::module_::import("model.agents.model_registry");
+
+    py::object scenarioBuilder;
+    py::object rngModule;
+    py::list requestList;
+    if (isCustom_) {
+        scenarioBuilder = py::module_::import("simulation.emitters.scenario_builder");
+        rngModule = py::module_::import("simulation.utils.rng");
+        requestList = buildCustomRequestList();
+    }
+
+    auto buildPop = [&]() -> py::object {
+        if (!isCustom_) return py::none();
+        py::object rngManager = rngModule.attr("RNGManager")(seed);
+        py::tuple result = scenarioBuilder.attr("build_custom_population")(
+            requestList, customBoostFalseAlarm_, config_, rngManager);
+        return result[1];
+    };
+
+    try {
+        py::list jobs;
+
+        for (const auto& modelId : modelIds) {
+            py::object runner = policyRunnerModule.attr("load_model")(repoRoot_, modelId);
+            std::string label = registryModule.attr("get_label")(repoRoot_, modelId).cast<std::string>();
+
+            py::dict job;
+            job["label"] = label;
+            job["kind"] = "rl";
+            job["runner"] = runner;
+            job["manual_emitters"] = buildPop();
+            jobs.append(job);
+        }
+
+        if (includeSequential) {
+            py::dict job;
+            job["label"] = "Traditional — Sequential";
+            job["kind"] = "traditional";
+            job["mode"] = "sequential";
+            job["manual_emitters"] = buildPop();
+            jobs.append(job);
+        }
+        if (includeBalancedRandom) {
+            py::dict job;
+            job["label"] = "Traditional — Balanced Random";
+            job["kind"] = "traditional";
+            job["mode"] = "balanced_random";
+            job["manual_emitters"] = buildPop();
+            jobs.append(job);
+        }
+
+        py::list rows = comparisonModule.attr("run_comparison")(config_, seed, jobs);
+
+        std::vector<ComparisonRow> result;
+        for (py::handle item : rows) {
+            py::object row = py::reinterpret_borrow<py::object>(item);
+            ComparisonRow cr;
+            cr.label = row.attr("label").cast<std::string>();
+            py::object m = row.attr("metrics");
+            cr.metrics.pd = m.attr("probability_of_detection").cast<double>();
+            cr.metrics.pfa = m.attr("probability_of_false_alarm").cast<double>();
+            cr.metrics.avgInterceptRate = m.attr("avg_intercept_rate").cast<double>();
+            cr.metrics.percentCorrect = m.attr("percent_correct").cast<double>();
+            cr.metrics.avgReward = m.attr("avg_reward").cast<double>();
+            result.push_back(cr);
+        }
+        return result;
+    } catch (const py::error_already_set& e) {
+        throw PythonBridgeError(std::string("Comparison run failed: ") + e.what());
+    }
 }
 
 EpisodeMetrics PythonBridge::currentMetrics() {

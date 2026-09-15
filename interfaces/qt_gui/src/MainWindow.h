@@ -36,6 +36,8 @@ private Q_SLOTS:
     void onModeChanged(int index);
     void onTick();
     void onScenarioSelected(QAction* action);
+    void onRunComparison();
+    void onImportModel();
 
 private:
     SchedulerMode selectedMode() const;
@@ -49,6 +51,7 @@ private:
     QString freqLabelForBand(int band) const;
     void buildScenarioMenu();
     void onCustomMixRequested();
+    void refreshModelWidgets();
 
     std::unique_ptr<Ui::MainWindow> ui;
     std::unique_ptr<PythonBridge> bridge_;

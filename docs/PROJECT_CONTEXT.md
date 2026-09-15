@@ -804,3 +804,126 @@ legitimately touching 5-14 distinct bands from one emitter object is
 expected and will show as one roster line with multiple bands listed; a
 Fixed-type emitter showing more than one band would now be an obvious,
 immediately-visible bug.
+
+---
+
+## 24. Sidebar navigation + Comparison tab (RL vs Traditional baselines)
+
+`MainWindow.ui` restructured: `centralwidget` is now a `QHBoxLayout`
+("rootLayout") holding a left `QListWidget` sidebar ("Simulation",
+"Comparison") and a `QStackedWidget`. Page 0 (`simulationPage`) is the
+entire previous window content, untouched internally -- every existing
+objectName (`spectrogram`, `eventsTable`, `log`, etc.) is unchanged, so
+none of the Module A-F `.cpp` logic needed to change. Page 1
+(`comparisonPage`) is new. `MainWindow.cpp`'s constructor wires
+`sidebarList->currentRowChanged` to `stackedWidget->setCurrentIndex`.
+
+**New `simulation/environment/comparison.py`**: `run_comparison(config,
+seed, model, manual_emitters_rl, manual_emitters_seq,
+manual_emitters_bal)` runs the RL policy and both `TraditionalScanDriver`
+modes each on their own fresh, temporary `AlterraEnv` -- fully isolated
+from any caller's live environment -- and returns
+`EpisodeMetrics` for all three. The three `manual_emitters_*` args exist
+because emitter objects are stateful (each has its own RNG that advances
+on `.reset()`), so a custom-mix population must be freshly rebuilt three
+independent times from the same seed (producing identical populations,
+as three separate object lists) rather than reusing one list across
+sub-runs -- reusing would silently desync the second and third sub-runs'
+"identical" population from what the RL run actually saw.
+
+`PythonBridge::runComparison(int seed)`: loads the RL model regardless of
+the live scheduler mode (comparison always includes RL), builds the
+three independent custom-mix populations when `isCustom_` (via
+`buildCustomRequestList()`, extracted as a shared helper used by both
+`reset()` and this new method), calls the above Python function, and
+converts the result to `std::vector<ComparisonRow>`. **Does not touch
+`env_`/`obs_`/`driver_`/`tracker_`** -- running a comparison never
+disturbs an in-progress run on the Simulation tab. Runs synchronously
+(blocks the GUI thread for three full episodes); acceptable at default
+episode lengths, worth revisiting if someone sets a very large custom
+episode length.
+
+Comparison page UI: its own seed spinbox (independent of the Simulation
+tab's, since the top controls bar lives inside `simulationPage` and
+isn't visible from this page), a Run button, a status label, and a
+results table (Scheduler | Pd | Pfa | Intercept Rate | Avg Reward | %
+Correct). Uses whatever scenario/config is currently active (Random
+Population or Custom Mix, set via the existing Scenario menu) --
+described in the page's own label text so it's not a hidden assumption.
+
+**Qt Charts linked in `CMakeLists.txt`** (per the earlier decision) ahead
+of the not-yet-built Analytics tab -- unused so far, no code references
+it yet.
+
+**Next**: Analytics tab (episode-long trend charts: reward, Pd/Pfa
+evolution, EXPLORE/EXPLOIT ratio, full 128-band coverage heatmap) using
+Qt Charts, as page 2 in the same sidebar/stacked-widget structure.
+
+---
+
+## 25. Module G — Model registry, LSTM/RNN support, multi-model comparison
+
+**`model/agents/model_registry.py` (new)**: teammate checkpoints are
+imported (never auto-scanned, per the earlier scope decision) into
+`model/agents/checkpoints/imported/`, tracked in a `manifest.json`
+there. Each entry: `{id, label, algo_class, filename}`, `algo_class` one
+of `"PPO"` / `"RecurrentPPO"`. `register_model` copies the source file in
+under a slugified-label + short-uuid id (collision-safe for repeated
+imports of similarly-named files).
+
+**`model/agents/policy_runner.py` (new)**: `PolicyRunner` unifies
+stepping across plain SB3 `PPO` and `sb3-contrib` `RecurrentPPO` --
+recurrent policies need LSTM hidden state (`state=`) and an
+`episode_start` flag carried across every `predict()` call; `PolicyRunner
+.reset()`/`.predict(obs)` hide that so every caller (live Simulation-tab
+stepping, and every Comparison-tab job) uses the same two-method
+interface regardless of which kind of model is loaded.
+`load_model(repo_root, model_id)` resolves via the registry and
+constructs the right underlying SB3/sb3-contrib class, raising a clear
+`RuntimeError` if `sb3-contrib` isn't installed and a `RecurrentPPO`
+checkpoint was requested (added to `requirements.txt`).
+
+**`PythonBridge` reworked around the registry**: `model_` is now always a
+`PolicyRunner` python object, never a raw SB3 model directly.
+`ensureModelLoaded()` compares `activeModelId_` against `loadedModelId_`
+and reloads only when they differ (so switching the RL Model dropdown
+and re-running doesn't reload on every single step). `step()`'s Rl branch
+calls `model_.attr("predict")(obs_)` with no `deterministic=` kwarg
+anymore -- that's now baked into `PolicyRunner.predict` itself.
+`reset()` calls `model_.attr("reset")()` right after
+`ensureModelLoaded()` whenever `mode_ == Rl`, clearing recurrent hidden
+state at the start of every episode (a no-op for plain PPO).
+**Migration**: on first construction, if the registry is empty and the
+legacy hardcoded `modelPath` (still passed in from `main.cpp`, unchanged)
+exists on disk, it's auto-registered as `"Default (bundled checkpoint)"`
+/ `"PPO"`, so existing setups keep working with zero manual steps; if the
+registry already has entries, the first one becomes the default active
+model.
+
+**`simulation/environment/comparison.py` reworked to a job-list model**:
+`run_comparison(config, seed, jobs)` takes a flat list of
+`{"label", "kind": "rl"|"traditional", ...}` dicts instead of three fixed
+RL/Sequential/BalancedRandom slots -- supports any N models plus 0/1/2
+baselines. `_run_rl` now takes a `PolicyRunner` (calling `.reset()` +
+`.predict(obs)`) instead of a raw model with `.predict(obs,
+deterministic=True)`.
+
+**`PythonBridge::runComparison(seed, modelIds, includeSequential,
+includeBalancedRandom)`**: loads each requested model fresh (independent
+of the live Simulation tab's active model/mode -- comparison never
+touches `env_`/`obs_`/`driver_`/`tracker_`), builds one independently-
+reproducible custom-mix population per job when `isCustom_` (same
+`buildPop()` pattern as before, now called once per job instead of
+exactly three times), and returns `vector<ComparisonRow>`.
+
+**GUI**: "Import Model..." button in both the Simulation-tab controls bar
+and the Comparison-tab's new "Models and Baselines to Include" group box
+(same `onImportModel()` slot, `QFileDialog` + a small label/algorithm-
+class dialog) -- `refreshModelWidgets()` repopulates both the Simulation
+tab's `rlModelCombo` (single-select, for the live run) and the
+Comparison tab's `modelsListWidget` (checkable, multi-select) after every
+import, preserving prior selections/checks where the same model id still
+exists. Comparison tab also gained `includeSequentialCheck` /
+`includeBalancedRandomCheck` (both default-checked) so baselines can be
+toggled off entirely, e.g. to compare several RL checkpoints against each
+other with no traditional baseline in the table at all.

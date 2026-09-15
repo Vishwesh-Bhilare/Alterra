@@ -115,6 +115,11 @@ struct BandPriority {
     int timeSinceHit = -1;
 };
 
+struct ComparisonRow {
+    std::string label;
+    EpisodeMetrics metrics;
+};
+
 // One rolling scheduler-history entry (Module B), for a decisions/detections
 // table or feed. Only populated for steps taken via AlterraEnv.step()
 // (Rl mode).
@@ -139,11 +144,22 @@ struct CustomEmitterRequest {
     int bandHi = 0;
 };
 
+// One entry from model/agents/model_registry.py's manifest -- a
+// teammate's imported checkpoint. algoClass is "PPO" or "RecurrentPPO"
+// (see model/agents/policy_runner.py for what that distinction affects).
+struct RegisteredModel {
+    std::string id;
+    std::string label;
+    std::string algoClass;
+};
+
 class PythonBridge {
 public:
-    // repoRoot/configPath are the base config; modelPath is only ever
-    // touched if/when the user selects Rl mode (lazy load -- a stale or
-    // incompatible checkpoint won't crash startup, only Rl mode).
+    // repoRoot/configPath are the base config. modelPath is only used
+    // once, at construction, to auto-import the legacy bundled checkpoint
+    // into the new model registry if the registry is currently empty and
+    // that file exists -- see the constructor. After that it plays no
+    // further role; models are managed via the registry from then on.
     PythonBridge(const std::string& repoRoot,
                  const std::string& configPath,
                  const std::string& modelPath);
@@ -151,8 +167,7 @@ public:
     // Reloads config from disk and re-applies the given manual overrides,
     // rebuilding the environment (preserving whatever scenario/custom mix
     // is currently selected). Call reset() afterward to start an episode
-    // under the new config. Throws PythonBridgeError on failure (e.g. an
-    // incompatible RL checkpoint if mode == Rl).
+    // under the new config. Throws PythonBridgeError on failure.
     void reconfigure(const ManualConfig& cfg);
 
     // Selects the default randomized population ("" scenario). Call
@@ -163,29 +178,41 @@ public:
     // requests (see CustomEmitterRequest) instead of the default random
     // population. Supersedes any previous scenario selection. Call
     // reset() afterward. Throws PythonBridgeError on an unknown
-    // archetype name (see scenario_builder._archetype_catalog for valid
-    // archetype strings).
+    // archetype name.
     void setCustomComposition(const std::vector<CustomEmitterRequest>& requests, bool boostFalseAlarm);
+
+    // Module G: model registry. importModel copies sourcePath into the
+    // registry (model/agents/checkpoints/imported/) under a fresh id and
+    // returns the new entry; throws PythonBridgeError on an invalid
+    // algoClass ("PPO"|"RecurrentPPO" only) or a missing source file.
+    // setActiveModel selects which registered model the live Simulation
+    // tab's Adaptive mode uses -- lazily loaded on the next reset()/step()
+    // that needs it (same lazy pattern as before), NOT loaded immediately.
+    std::vector<RegisteredModel> listModels();
+    RegisteredModel importModel(const std::string& sourcePath, const std::string& label, const std::string& algoClass);
+    void setActiveModel(const std::string& modelId);
+    std::string activeModelId() const { return activeModelId_; }
 
     void reset(int seed);
     StepResult step();
     EpisodeMetrics currentMetrics();
     TruthMatrix truthMatrix();
 
+    // Runs `modelIds` (each freshly loaded, independent of the live
+    // Simulation tab's active model / mode) plus the requested traditional
+    // baselines, all on isolated temporary environments -- never touches
+    // the live env_/obs_/driver_/tracker_, so an in-progress Simulation
+    // run is undisturbed. Synchronous/blocking for the duration of every
+    // included episode. Throws PythonBridgeError if any model fails to
+    // load (e.g. observation-space mismatch, or a RecurrentPPO checkpoint
+    // when sb3-contrib isn't installed).
+    std::vector<ComparisonRow> runComparison(
+        int seed, const std::vector<std::string>& modelIds, bool includeSequential, bool includeBalancedRandom);
+
     // Module B: full-spectrum ranking snapshot / rolling decision history,
     // fetched on demand (not part of every step's StepResult). n = -1
     // means "all available" for recentEvents/recentHits.
     std::vector<BandPriority> bandPriorities();
-
-    // Debugging aid: one summary line per currently-loaded emitter
-    // (id, kind, threat level, and the distinct band(s) its schedule
-    // actually touches -- derived straight from _band_schedule, so it
-    // reflects reality regardless of archetype/placement logic). Call
-    // after reset() to see exactly what population that episode got,
-    // e.g. to confirm "1 emitter selected" really only produced one
-    // emitter object (a multi-band spread from a single agile/periodic
-    // emitter is expected; from a fixed emitter it would not be).
-    std::vector<std::string> emitterRoster();
     std::vector<SchedulerHistoryEvent> recentEvents(int n = -1);
     std::vector<SchedulerHistoryEvent> recentHits(int n = -1);
 
@@ -199,6 +226,12 @@ public:
     double bandBandwidthHz() const;               // spectrum bin width (not B_I)
     double bandStartFreqHz() const;
     int numBands() const;
+
+    // Debugging aid: one summary line per currently-loaded emitter (id,
+    // kind, threat level, and the distinct band(s) its schedule actually
+    // touches). Call after reset() to see exactly what population that
+    // episode got.
+    std::vector<std::string> emitterRoster();
 
     // Read the currently-loaded config's defaults, to seed GUI widgets on
     // startup (before any manual override has been applied).
@@ -214,11 +247,11 @@ private:
 
     // Shared by reconfigure()/setRandomPopulation()/setCustomComposition():
     // reloads config from disk, applies lastManualConfig_'s overrides,
-    // then builds the emitter population according to isCustom_
-    // (customRequests_/customBoostFalseAlarm_ if true, else the default
-    // random population), and rebuilds env_. mode_ is set from
-    // lastManualConfig_.mode at the end.
+    // and rebuilds env_ with no manual_emitters attached -- population is
+    // (re)built fresh inside reset(seed) instead, keyed by that seed (see
+    // reset()). mode_ is set from lastManualConfig_.mode at the end.
     void rebuildEnv();
+
     py::list buildCustomRequestList() const;
 
     ClassificationCounts extractClassificationCounts(const py::object& dwellResult) const;
@@ -230,7 +263,7 @@ private:
     py::module_ metricsModule_;
     py::object config_;
     py::object env_;
-    py::object model_;
+    py::object model_;     // a PolicyRunner instance (model.agents.policy_runner), not a raw SB3 model
     py::object driver_;    // TraditionalScanDriver, only valid when mode_ != Rl
     py::object tracker_;
     py::object obs_;
@@ -239,6 +272,8 @@ private:
     std::string configPath_;
     std::string modelPath_;
     bool modelLoaded_ = false;
+    std::string loadedModelId_;   // which registry id is currently loaded into model_
+    std::string activeModelId_;   // which registry id the live Simulation tab should use
     SchedulerMode mode_ = SchedulerMode::TraditionalSequential;
 
     ManualConfig lastManualConfig_;

@@ -7,6 +7,11 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
+# Charts is not used yet -- linked now ahead of the upcoming Analytics tab
+# (per the earlier decision to use Qt Charts rather than hand-rolled
+# QPainter charts), so no further CMake changes are needed once that
+# tab's .cpp code actually starts using it.
+find_package(Qt6 REQUIRED COMPONENTS Charts)
 find_package(pybind11 REQUIRED)
 
 add_executable(alterra_gui
@@ -18,7 +23,7 @@ add_executable(alterra_gui
 )
 
 target_include_directories(alterra_gui PRIVATE src)
-target_link_libraries(alterra_gui PRIVATE Qt6::Widgets pybind11::embed)
+target_link_libraries(alterra_gui PRIVATE Qt6::Widgets Qt6::Charts pybind11::embed)
 
 # QT_NO_KEYWORDS: Qt's `slots`/`signals`/`emit` macros collide with
 # Python 3.14's PyType_Spec (has a `slots` struct field) once pybind11

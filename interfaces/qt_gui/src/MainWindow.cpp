@@ -20,6 +20,13 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFrame>
+#include <QCoreApplication>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QLineEdit>
+#include <QFormLayout>
+#include <QListWidgetItem>
+#include <QSet>
 #include <algorithm>
 
 namespace {
@@ -85,8 +92,144 @@ MainWindow::MainWindow(const std::string& repoRoot,
     connect(timer_, &QTimer::timeout, this, &MainWindow::onTick);
     timer_->setInterval(ui->speedSlider->value());
 
+    connect(ui->sidebarList, &QListWidget::currentRowChanged,
+            ui->stackedWidget, &QStackedWidget::setCurrentIndex);
+    ui->sidebarList->setCurrentRow(0);
+
+    connect(ui->runComparisonButton, &QPushButton::clicked, this, &MainWindow::onRunComparison);
+    connect(ui->importModelButton, &QPushButton::clicked, this, &MainWindow::onImportModel);
+    connect(ui->importModelButton2, &QPushButton::clicked, this, &MainWindow::onImportModel);
+
+    refreshModelWidgets();
     onModeChanged(ui->modeCombo->currentIndex());
     onResetEpisode();
+}
+
+void MainWindow::refreshModelWidgets() {
+    std::vector<RegisteredModel> models = bridge_->listModels();
+
+    QString previousRlSelection = ui->rlModelCombo->currentData().toString();
+    ui->rlModelCombo->clear();
+    for (const auto& m : models) {
+        ui->rlModelCombo->addItem(
+            QString::fromStdString(m.label) + " [" + QString::fromStdString(m.algoClass) + "]",
+            QString::fromStdString(m.id));
+    }
+    int idx = ui->rlModelCombo->findData(previousRlSelection);
+    if (idx < 0 && !bridge_->activeModelId().empty()) {
+        idx = ui->rlModelCombo->findData(QString::fromStdString(bridge_->activeModelId()));
+    }
+    if (idx >= 0) ui->rlModelCombo->setCurrentIndex(idx);
+
+    QSet<QString> previouslyChecked;
+    for (int i = 0; i < ui->modelsListWidget->count(); ++i) {
+        auto* item = ui->modelsListWidget->item(i);
+        if (item->checkState() == Qt::Checked) {
+            previouslyChecked.insert(item->data(Qt::UserRole).toString());
+        }
+    }
+    ui->modelsListWidget->clear();
+    for (const auto& m : models) {
+        auto* item = new QListWidgetItem(
+            QString::fromStdString(m.label) + " [" + QString::fromStdString(m.algoClass) + "]");
+        item->setData(Qt::UserRole, QString::fromStdString(m.id));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(
+            previouslyChecked.contains(QString::fromStdString(m.id)) ? Qt::Checked : Qt::Unchecked);
+        ui->modelsListWidget->addItem(item);
+    }
+}
+
+void MainWindow::onImportModel() {
+    QString sourcePath = QFileDialog::getOpenFileName(
+        this, "Import Model", QString(), "SB3 Checkpoints (*.zip)");
+    if (sourcePath.isEmpty()) return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Import Model");
+
+    auto* form = new QFormLayout();
+    auto* labelEdit = new QLineEdit(QFileInfo(sourcePath).completeBaseName(), &dialog);
+    auto* algoCombo = new QComboBox(&dialog);
+    algoCombo->addItem("PPO", "PPO");
+    algoCombo->addItem("RecurrentPPO (LSTM/RNN)", "RecurrentPPO");
+    form->addRow("Label:", labelEdit);
+    form->addRow("Algorithm:", algoCombo);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) return;
+    QString label = labelEdit->text().trimmed();
+    if (label.isEmpty()) {
+        ui->log->appendPlainText("--- Import Model: label cannot be empty, cancelled ---");
+        return;
+    }
+
+    try {
+        bridge_->importModel(sourcePath.toStdString(), label.toStdString(),
+                              algoCombo->currentData().toString().toStdString());
+    } catch (const PythonBridgeError& e) {
+        ui->log->appendPlainText(QString("--- Import Model error: %1 ---").arg(e.what()));
+        return;
+    }
+
+    ui->log->appendPlainText(QString("--- Model imported: %1 ---").arg(label));
+    refreshModelWidgets();
+}
+
+void MainWindow::onRunComparison() {
+    std::vector<std::string> modelIds;
+    for (int i = 0; i < ui->modelsListWidget->count(); ++i) {
+        auto* item = ui->modelsListWidget->item(i);
+        if (item->checkState() == Qt::Checked) {
+            modelIds.push_back(item->data(Qt::UserRole).toString().toStdString());
+        }
+    }
+    bool includeSeq = ui->includeSequentialCheck->isChecked();
+    bool includeBal = ui->includeBalancedRandomCheck->isChecked();
+    int totalJobs = static_cast<int>(modelIds.size()) + (includeSeq ? 1 : 0) + (includeBal ? 1 : 0);
+
+    if (totalJobs == 0) {
+        ui->comparisonStatusLabel->setText("Select at least one model or baseline");
+        return;
+    }
+
+    ui->runComparisonButton->setEnabled(false);
+    ui->comparisonStatusLabel->setText(QString("Running (%1 job%2)...")
+        .arg(totalJobs).arg(totalJobs == 1 ? "" : "s"));
+    ui->comparisonTable->setRowCount(0);
+    QCoreApplication::processEvents();  // let the status label actually paint before the blocking call below
+
+    int seed = ui->comparisonSeedSpin->value();
+    std::vector<ComparisonRow> rows;
+    try {
+        rows = bridge_->runComparison(seed, modelIds, includeSeq, includeBal);
+    } catch (const PythonBridgeError& e) {
+        ui->comparisonStatusLabel->setText("Error — see Log tab");
+        ui->log->appendPlainText(QString("--- Comparison error: %1 ---").arg(e.what()));
+        ui->runComparisonButton->setEnabled(true);
+        return;
+    }
+
+    ui->comparisonTable->setRowCount(static_cast<int>(rows.size()));
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto& row = rows[i];
+        int r = static_cast<int>(i);
+        ui->comparisonTable->setItem(r, 0, new QTableWidgetItem(QString::fromStdString(row.label)));
+        ui->comparisonTable->setItem(r, 1, new QTableWidgetItem(QString::number(row.metrics.pd, 'f', 3)));
+        ui->comparisonTable->setItem(r, 2, new QTableWidgetItem(QString::number(row.metrics.pfa, 'f', 3)));
+        ui->comparisonTable->setItem(r, 3, new QTableWidgetItem(QString::number(row.metrics.avgInterceptRate, 'f', 3)));
+        ui->comparisonTable->setItem(r, 4, new QTableWidgetItem(QString::number(row.metrics.avgReward, 'f', 3)));
+        ui->comparisonTable->setItem(r, 5, new QTableWidgetItem(QString::number(row.metrics.percentCorrect * 100.0, 'f', 1) + "%"));
+    }
+
+    ui->comparisonStatusLabel->setText(QString("Done (seed=%1)").arg(seed));
+    ui->runComparisonButton->setEnabled(true);
 }
 
 MainWindow::~MainWindow() = default;
@@ -269,6 +412,8 @@ void MainWindow::onModeChanged(int /*index*/) {
     bool isTraditional = selectedMode() != SchedulerMode::Rl;
     ui->traditionalDwellSpin->setEnabled(isTraditional);
     ui->traditionalDwellLabel->setEnabled(isTraditional);
+    ui->rlModelCombo->setEnabled(!isTraditional);
+    ui->rlModelLabel->setEnabled(!isTraditional);
 }
 
 void MainWindow::onApplyConfig() {
@@ -327,6 +472,12 @@ void MainWindow::onResetEpisode() {
     ui->stepButton->setEnabled(true);
 
     int seed = ui->seedSpin->value();
+    if (selectedMode() == SchedulerMode::Rl) {
+        QString modelId = ui->rlModelCombo->currentData().toString();
+        if (!modelId.isEmpty()) {
+            bridge_->setActiveModel(modelId.toStdString());
+        }
+    }
     try {
         bridge_->reset(seed);
     } catch (const PythonBridgeError& e) {
