@@ -170,7 +170,7 @@ class AlterraEnv(gym.Env):
         self._last_band = self._current_band
         self._consecutive_hits = 0
         self._prev_had_hit = False
-        self._prev_action_direction_norm = 0.5
+        self._prev_action_direction_norm = 1.0 if self._current_band <= (self.config.spectrum.num_bands // 2) else 0.0
         self._last_measured_power_norm = 0.0
         self._hit_miss_buffer = np.zeros((self._history_length, 6), dtype=np.float32)
         self.last_dwell_result = None
@@ -191,14 +191,17 @@ class AlterraEnv(gym.Env):
                 band = min(1, num_bands - 1)
                 delta = band - self._current_band
                 hit_boundary = True
+                self._prev_action_direction_norm = 1.0  # Reflected: now sweeping UP
             elif target_band >= num_bands:
                 band = max(num_bands - 2, 0)
                 delta = band - self._current_band
                 hit_boundary = True
+                self._prev_action_direction_norm = 0.0  # Reflected: now sweeping DOWN
             else:
                 band = target_band
                 hit_boundary = False
-            self._prev_action_direction_norm = float(direction_idx) / max(len(self._step_sizes) - 1, 1)
+                if direction_idx != 1:  # Preserve active sweep direction while staying on signal (direction_idx == 1)
+                    self._prev_action_direction_norm = float(direction_idx) / max(len(self._step_sizes) - 1, 1)
         else:
             band = int(action[0])
             delta = band - self._current_band

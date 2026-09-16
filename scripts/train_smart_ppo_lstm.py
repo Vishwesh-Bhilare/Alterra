@@ -81,7 +81,7 @@ class SmartExpertScheduler:
                 self.sweep_dir = -1
                 return 0, 0
 
-        # General spectrum sweep
+        # General spectrum sweep: maintain sweep direction until boundary reflection
         if current_band >= self.num_bands - 1:
             self.sweep_dir = -1
         elif current_band <= 0:
@@ -104,15 +104,15 @@ def make_env_for_scenario(scenario_file: str | None, config_path: str = "configs
     return AlterraEnv(config)
 
 
-def generate_smart_dataset(episodes_per_scenario: int = 60):
+def generate_smart_dataset(episodes_per_scenario: int = 60, random_population_episodes: int = 140):
     scenario_files = [
-        "configs/scenarios/silent_gap_revisit.yaml",
-        "configs/scenarios/mid_episode_burst.yaml",
-        "configs/scenarios/fast_hopping_evasive.yaml",
-        "configs/scenarios/periodic_scan_focus.yaml",
-        "configs/scenarios/known_baseline.yaml",
-        "configs/scenarios/dense_congested.yaml",
-        None,  # default random population curriculum
+        ("configs/scenarios/silent_gap_revisit.yaml", episodes_per_scenario),
+        ("configs/scenarios/mid_episode_burst.yaml", episodes_per_scenario),
+        ("configs/scenarios/fast_hopping_evasive.yaml", episodes_per_scenario),
+        ("configs/scenarios/periodic_scan_focus.yaml", episodes_per_scenario),
+        ("configs/scenarios/known_baseline.yaml", episodes_per_scenario),
+        ("configs/scenarios/dense_congested.yaml", episodes_per_scenario),
+        (None, random_population_episodes),  # default random population curriculum
     ]
 
     expert = SmartExpertScheduler(num_bands=128)
@@ -122,17 +122,17 @@ def generate_smart_dataset(episodes_per_scenario: int = 60):
     act_dir_list = []
     act_dwell_list = []
 
-    print(f"Generating expert dataset across {len(scenario_files)} scenario types ({episodes_per_scenario} eps each)...")
+    print(f"Generating expert dataset across {len(scenario_files)} scenario configurations...")
 
-    for s_idx, s_file in enumerate(scenario_files):
+    for s_idx, (s_file, n_eps) in enumerate(scenario_files):
         s_name = os.path.basename(s_file) if s_file else "random_population"
-        print(f"  -> Simulating scenario: {s_name}...")
-        for ep in range(episodes_per_scenario):
+        print(f"  -> Simulating scenario: {s_name} ({n_eps} episodes)...")
+        for ep in range(n_eps):
             env = make_env_for_scenario(s_file)
             obs, _ = env.reset(seed=ep * 17 + s_idx * 100 + 42)
             expert.reset()
             expert.current_band = env._current_band
-            expert.sweep_dir = -1 if env._current_band > 64 else 1
+            expert.sweep_dir = 1 if env._prev_action_direction_norm > 0.5 else -1
 
             done = False
             while not done:
@@ -143,6 +143,15 @@ def generate_smart_dataset(episodes_per_scenario: int = 60):
                 obs_tracks_list.append(obs["band_tracks"])
                 act_dir_list.append(dir_act)
                 act_dwell_list.append(dwell_act)
+
+                # Boundary turnaround oversampling: enforce strong reflection signal at endpoints
+                if env._current_band <= 0 or env._current_band >= 127:
+                    for _ in range(4):
+                        obs_seq_list.append(obs["hit_miss_seq"])
+                        obs_rec_list.append(obs["receiver"])
+                        obs_tracks_list.append(obs["band_tracks"])
+                        act_dir_list.append(dir_act)
+                        act_dwell_list.append(dwell_act)
 
                 action = np.array([dir_act, dwell_act], dtype=np.int64)
                 obs, reward, term, trunc, info = env.step(action)
@@ -186,23 +195,35 @@ def train_smart_ppo_lstm():
     )
 
     # 1. Behavior Cloning on Multi-Scenario Expert Demonstrations
-    seq, rec, tracks, act_dir, act_dwell = generate_smart_dataset(episodes_per_scenario=60)
+    seq, rec, tracks, act_dir, act_dwell = generate_smart_dataset(
+        episodes_per_scenario=60,
+        random_population_episodes=140,
+    )
     dataset = TensorDataset(seq, rec, tracks, act_dir, act_dwell)
     dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
 
-    policy = model.policy
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+    print(f"Training acceleration device: {device}")
+    policy = model.policy.to(device)
+
     optimizer = optim.AdamW(policy.parameters(), lr=1e-3, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=25, eta_min=1e-5)
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.01)
 
-    print("\nPhase 1: Deep Multi-Scenario Neural Policy Pretraining (20 Epochs)...")
-    for epoch in range(1, 21):
+    print("\nPhase 1: Deep Multi-Scenario Neural Policy Pretraining (25 Epochs)...")
+    for epoch in range(1, 26):
         total_loss = 0.0
         correct_dir = 0
         correct_dwell = 0
         total_samples = 0
 
         for b_seq, b_rec, b_tracks, b_dir, b_dwell in dataloader:
+            b_seq = b_seq.to(device)
+            b_rec = b_rec.to(device)
+            b_tracks = b_tracks.to(device)
+            b_dir = b_dir.to(device)
+            b_dwell = b_dwell.to(device)
+
             optimizer.zero_grad()
             obs_dict = {
                 "hit_miss_seq": b_seq,
@@ -219,7 +240,19 @@ def train_smart_ppo_lstm():
 
             loss_dir = loss_fn(logits_dir, b_dir)
             loss_dwell = loss_fn(logits_dwell, b_dwell)
-            loss = loss_dir + loss_dwell
+
+            # Strict Boundary Margin Loss:
+            # At Band 0 (b_rec[:, 0] < 0.002), moving left (0) is invalid; moving right (2) must dominate.
+            # At Band 127 (b_rec[:, 0] > 0.998), moving right (2) is invalid; moving left (0) must dominate.
+            left_bound = (b_rec[:, 0] < 0.002)
+            right_bound = (b_rec[:, 0] > 0.998)
+            loss_boundary = torch.tensor(0.0, device=device)
+            if left_bound.any():
+                loss_boundary = loss_boundary + torch.relu(logits_dir[left_bound, 0] - logits_dir[left_bound, 2] + 4.0).mean()
+            if right_bound.any():
+                loss_boundary = loss_boundary + torch.relu(logits_dir[right_bound, 2] - logits_dir[right_bound, 0] + 4.0).mean()
+
+            loss = loss_dir + loss_dwell + 5.0 * loss_boundary
 
             loss.backward()
             optimizer.step()
@@ -236,18 +269,25 @@ def train_smart_ppo_lstm():
         current_lr = scheduler.get_last_lr()[0]
         print(f"  Epoch {epoch:02d} | Loss: {avg_loss:.4f} | Dir Acc: {acc_dir:.1f}% | Dwell Acc: {acc_dwell:.1f}% | LR: {current_lr:.6f}")
 
+    # Move policy back to CPU for standard SB3 serialization
+    policy.to("cpu")
+
     # Save to best model checkpoints
     os.makedirs("model/agents/checkpoints/best", exist_ok=True)
     os.makedirs("model/agents/checkpoints/targeted_lstm/best", exist_ok=True)
+    os.makedirs("model/agents/imported", exist_ok=True)
     save_path = "model/agents/checkpoints/best/best_model.zip"
     targeted_path = "model/agents/checkpoints/targeted_lstm/best/best_model.zip"
+    imported_path = "model/agents/imported/default_bundled_checkpoint_0446a5.zip"
     model.save(save_path)
     model.save(targeted_path)
+    model.save(imported_path)
 
     print("\n" + "=" * 76)
     print(f"  PPO + LSTM Model Successfully Fine-Tuned & Saved!")
     print(f"  -> Canonical Path : {save_path}")
     print(f"  -> Targeted Path  : {targeted_path}")
+    print(f"  -> Bundled Path   : {imported_path}")
     print("=" * 76)
 
 
