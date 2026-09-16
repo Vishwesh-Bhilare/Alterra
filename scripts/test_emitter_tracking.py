@@ -93,10 +93,8 @@ def run_test():
         # Place receiver 6 bands away so we observe search sweep -> intercept -> lock & track
         if kind == "fixed":
             start_band = target_band + 6
-        elif hasattr(emitter, "_sweep_bands") and len(emitter._sweep_bands) > 0:
-            start_band = int(emitter._sweep_bands[0]) + 4
-        elif hasattr(emitter, "_hop_bands") and len(emitter._hop_bands) > 0:
-            start_band = int(emitter._hop_bands[0]) + 4
+        elif hasattr(emitter, "_band_schedule") and len(emitter._band_schedule) > 0:
+            start_band = min(int(emitter._band_schedule[0]) + 6, config.spectrum.num_bands - 1)
         else:
             start_band = 55
             
