@@ -26,7 +26,7 @@ class TestAlterraSystemRigorous(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = load_config("configs/default_config.yaml")
-        cls.model_path = "model/agents/checkpoints/targeted_lstm/best/best_model.zip"
+        cls.model_path = "model/agents/checkpoints/best/best_model.zip"
 
     def setUp(self):
         self.env = AlterraEnv(self.config)
