@@ -30,7 +30,7 @@ from model.agents.lstm_policy import PPOLSTMExtractor
 class SmartExpertScheduler:
     """
     Intelligent expert scheduler that reasons over threat levels, staleness,
-    pattern locality, and dwell escalation without hardcoded sweep directions.
+    pattern locality, periodic spans, and dwell escalation.
     """
     def __init__(self, num_bands: int = 128):
         self.num_bands = num_bands
@@ -58,30 +58,70 @@ class SmartExpertScheduler:
         self.consecutive_hits = 0
         dwell_idx = 0
 
-        # Check for known high-threat targets needing revisit
         threats = tracks[:, 0] * 3.0
         time_since_hit = tracks[:, 2]
         ever_hit = tracks[:, 3]
         time_since_visit = tracks[:, 4]
         scanned_ratio = receiver[8]
 
-        # Only High Threat (Threat 3) warrants dedicated revisit, and only when spectrum is surveyed (scanned_ratio >= 0.70)
-        # and has been silent long enough to warrant a check (time_since_hit >= 0.35, time_since_visit >= 0.25)
-        eligible = (ever_hit > 0.5) & (threats >= 2.5) & (time_since_visit >= 0.25) & (time_since_hit >= 0.35)
-        revisit_scores = np.where(eligible, time_since_hit, -999.0)
-        revisit_scores[current_band] = -999.0
+        hit_indices = np.where(ever_hit > 0.5)[0]
 
-        best_revisit = int(np.argmax(revisit_scores))
-        if revisit_scores[best_revisit] > 0.35 and scanned_ratio >= 0.70:
-            target = best_revisit
-            if target > current_band:
-                self.sweep_dir = 1
-                return 2, 0
-            elif target < current_band:
-                self.sweep_dir = -1
-                return 0, 0
+        # 3. Priority Revisit & Periodic Pattern Tracking across all detected signals
+        if len(hit_indices) > 0 and scanned_ratio >= 0.50:
+            # Threat weights: Level 3 -> 3.0, Level 2 -> 2.0, Level 1 -> 1.0 (min 1.0)
+            threat_weights = np.maximum(threats, 1.0)
+            
+            # Revisit priority: proportional to threat level and staleness
+            revisit_priority = np.where(
+                (ever_hit > 0.5) & (time_since_visit >= 0.15),
+                threat_weights * (1.0 + 2.5 * time_since_visit),
+                -999.0
+            )
+            revisit_priority[current_band] = -999.0
 
-        # General spectrum sweep: maintain sweep direction until boundary reflection
+            min_hit_b = int(np.min(hit_indices))
+            max_hit_b = int(np.max(hit_indices))
+            span_width = max_hit_b - min_hit_b + 1
+
+            # Pattern / Periodic Span Identification:
+            # Genuine periodic scan pattern: multiple bands (>= 4) across a moderate span (6 <= span <= 24)
+            if len(hit_indices) >= 4 and 6 <= span_width <= 24:
+                span_lo = max(0, min_hit_b - 1)
+                span_hi = min(self.num_bands - 1, max_hit_b + 1)
+
+                # Check if urgent high-threat target outside span requires attention
+                best_revisit = int(np.argmax(revisit_priority))
+                if revisit_priority[best_revisit] > 5.0 and not (span_lo <= best_revisit <= span_hi):
+                    target = best_revisit
+                    if target > current_band:
+                        self.sweep_dir = 1
+                        return 2, 0
+                    elif target < current_band:
+                        self.sweep_dir = -1
+                        return 0, 0
+
+                # Sweep within the active periodic pattern span
+                if current_band >= span_hi:
+                    self.sweep_dir = -1
+                elif current_band <= span_lo:
+                    self.sweep_dir = 1
+
+                dir_action = 2 if self.sweep_dir == 1 else 0
+                return dir_action, dwell_idx
+
+            else:
+                # Discrete Emitters (Single or Dispersed): Priority Revisit when stale
+                best_revisit = int(np.argmax(revisit_priority))
+                if revisit_priority[best_revisit] > 2.0:
+                    target = best_revisit
+                    if target > current_band:
+                        self.sweep_dir = 1
+                        return 2, 0
+                    elif target < current_band:
+                        self.sweep_dir = -1
+                        return 0, 0
+
+        # 4. General survey sweep: maintain direction until boundary reflection
         if current_band >= self.num_bands - 1:
             self.sweep_dir = -1
         elif current_band <= 0:
@@ -112,6 +152,7 @@ def generate_smart_dataset(episodes_per_scenario: int = 60, random_population_ep
         ("configs/scenarios/periodic_scan_focus.yaml", episodes_per_scenario),
         ("configs/scenarios/known_baseline.yaml", episodes_per_scenario),
         ("configs/scenarios/dense_congested.yaml", episodes_per_scenario),
+        ("configs/scenarios/sparse_single_threat.yaml", episodes_per_scenario),
         (None, random_population_episodes),  # default random population curriculum
     ]
 
