@@ -1,13 +1,27 @@
 #include "PythonBridge.h"
 
 #include <cstring>
+#include <random>
 
 PythonBridge::PythonBridge(const std::string& repoRoot,
                             const std::string& configPath,
                             const std::string& modelPath)
     : repoRoot_(repoRoot), configPath_(configPath), modelPath_(modelPath) {
     py::module_ sys = py::module_::import("sys");
-    sys.attr("path").attr("insert")(0, repoRoot_);
+
+    // Strictly prioritize .venv site-packages and exclude global Anaconda site-packages
+    // to prevent dual-protobuf / libtensorflow conflicts on macOS.
+    py::list oldPath = sys.attr("path");
+    py::list newPath;
+    newPath.append(repoRoot);
+    newPath.append(repoRoot + "/.venv/lib/python3.13/site-packages");
+    for (auto item : oldPath) {
+        std::string p = item.cast<std::string>();
+        if (p.find("site-packages") == std::string::npos || p.find(".venv") != std::string::npos) {
+            newPath.append(item);
+        }
+    }
+    sys.attr("path") = newPath;
 
     metricsModule_ = py::module_::import("simulation.metrics");
     tracker_ = metricsModule_.attr("MetricsTracker")();
@@ -69,6 +83,12 @@ void PythonBridge::ensureModelLoaded() {
     }
 
     try {
+        try {
+            py::module_::import("model.agents.lstm_policy");
+        } catch (const py::error_already_set&) {}
+        try {
+            py::module_::import("model.agents.spectral_extractor");
+        } catch (const py::error_already_set&) {}
         py::module_ policyRunnerModule = py::module_::import("model.agents.policy_runner");
         model_ = policyRunnerModule.attr("load_model")(repoRoot_, activeModelId_);
         loadedModelId_ = activeModelId_;

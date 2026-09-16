@@ -112,7 +112,11 @@ mlruns/
 **/eval_logs/
 
 # PPO checkpoints
-model/agents/checkpoints/
+model/agents/checkpoints/*
+!model/agents/checkpoints/best/
+model/agents/checkpoints/best/*
+!model/agents/checkpoints/best/best_model.zip
+!model/agents/checkpoints/demo_ppo.zip
 
 # ============================================================
 # Deinterleaving training checkpoints
@@ -234,3 +238,5 @@ docker-data/
 
 *.pid
 *.pid.lock
+data/
+.cache/

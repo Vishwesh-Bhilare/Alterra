@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -134,12 +134,20 @@ class RewardConfig:
     staleness_norm_slots: int
     novelty_bonus: float
     hit_confirm_floor: float
+    tracking_reward: float = 6.0
+    signal_lost_penalty: float = -0.8
+    empty_stay_penalty: float = -0.4
+    boundary_penalty: float = -0.2
 
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
     dwell_options_slots: list[int]
     reward: RewardConfig
+    action_mode: str = "relative"
+    relative_step_sizes: list[int] = field(default_factory=lambda: [-1, 0, 1])
+    history_length: int = 16
+    lstm_hidden_dim: int = 64
 
 
 @dataclass(frozen=True)
@@ -160,8 +168,13 @@ class ScenarioConfig:
 
 @dataclass(frozen=True)
 class SchedulerInsightConfig:
-    power_history_len: int
-    event_history_len: int
+    power_history_len: int = 50
+    event_history_len: int = 20
+
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    tsrd_dir: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -184,7 +197,8 @@ class AlterraConfig:
     comparison: ComparisonConfig
     scenario: ScenarioConfig
     pulse: PulseConfig
-    scheduler_insight: SchedulerInsightConfig
+    scheduler_insight: SchedulerInsightConfig = field(default_factory=SchedulerInsightConfig)
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
 
 def _int_range(d: Optional[dict]) -> Optional[IntRange]:
@@ -261,11 +275,19 @@ def load_config(path: str | Path) -> AlterraConfig:
         staleness_norm_slots=int(reward_raw["staleness_norm_slots"]),
         novelty_bonus=float(reward_raw["novelty_bonus"]),
         hit_confirm_floor=float(reward_raw["hit_confirm_floor"]),
+        tracking_reward=float(reward_raw.get("tracking_reward", 6.0)),
+        signal_lost_penalty=float(reward_raw.get("signal_lost_penalty", -0.8)),
+        empty_stay_penalty=float(reward_raw.get("empty_stay_penalty", -0.4)),
+        boundary_penalty=float(reward_raw.get("boundary_penalty", -0.2)),
     )
 
     environment = EnvironmentConfig(
         dwell_options_slots=[int(v) for v in env_raw["dwell_options_slots"]],
         reward=reward,
+        action_mode=str(env_raw.get("action_mode", "relative")),
+        relative_step_sizes=[int(v) for v in env_raw.get("relative_step_sizes", [-1, 0, 1])],
+        history_length=int(env_raw.get("history_length", 16)),
+        lstm_hidden_dim=int(env_raw.get("lstm_hidden_dim", 64)),
     )
 
     comparison_raw = raw.get("comparison", {})
@@ -281,6 +303,9 @@ def load_config(path: str | Path) -> AlterraConfig:
     scenario = ScenarioConfig(
         manual_scenario_path=scenario_raw.get("manual_scenario_path")
     )
+
+    dataset_raw = raw.get("dataset", {})
+    dataset = DatasetConfig(tsrd_dir=dataset_raw.get("tsrd_dir"))
 
     pulse_raw = raw["pulse"]
     pulse = PulseConfig(
@@ -298,10 +323,10 @@ def load_config(path: str | Path) -> AlterraConfig:
         retune_time_s=float(receiver_raw["retune_time_s"]),
     )
 
-    si_raw = raw["scheduler_insight"]
+    si_raw = raw.get("scheduler_insight", {})
     scheduler_insight = SchedulerInsightConfig(
-        power_history_len=int(si_raw["power_history_len"]),
-        event_history_len=int(si_raw["event_history_len"]),
+        power_history_len=int(si_raw.get("power_history_len", 50)),
+        event_history_len=int(si_raw.get("event_history_len", 20)),
     )
 
     return AlterraConfig(
@@ -328,6 +353,7 @@ def load_config(path: str | Path) -> AlterraConfig:
         scenario=scenario,
         pulse=pulse,
         scheduler_insight=scheduler_insight,
+        dataset=dataset,
     )
 
 

@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
     // no longer crashes startup, it just fails that one mode switch with an
     // in-app error (see PythonBridge::ensureModelLoaded).
     std::string modelPath = std::string(ALTERRA_REPO_ROOT)
-        + "/model/agents/checkpoints/coverage_fix_v1/best/best_model.zip";
+        + "/model/agents/checkpoints/best/best_model.zip";
 
     if (argc > 1) configPath = argv[1];
     if (argc > 2) modelPath = argv[2];

@@ -1,15 +1,23 @@
 """
-Train the PPO Smart Scan Scheduler against AlterraEnv, with periodic
+Train the PPO + LSTM Smart Scan Scheduler against AlterraEnv, with periodic
 checkpointing and eval-driven best-model saving. Uses SubprocVecEnv so
 each of --n-envs training environments runs in its own process/core. Run
 from alterra/ repo root:
 
-  python -m model.agents.train_ppo --timesteps 2000000 --ent-coef 0.01 --n-envs 8
+  python -m model.agents.train_ppo --timesteps 2000000 --ent-coef 0.03 --n-envs 8
 """
 from __future__ import annotations
 
-import argparse
 import os
+import sys
+
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_venv_dir = os.path.join(_repo_root, ".venv")
+_venv_python = os.path.join(_venv_dir, "bin", "python")
+if os.path.exists(_venv_python) and sys.prefix != _venv_dir:
+    os.execv(_venv_python, [_venv_python, "-m", "model.agents.train_ppo"] + sys.argv[1:])
+
+import argparse
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
@@ -19,6 +27,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from simulation.environment import AlterraEnv
 from simulation.utils.config_loader import load_config
+from model.agents.lstm_policy import PPOLSTMExtractor
 
 
 def make_env(config_path: str):
@@ -33,8 +42,9 @@ def main():
     parser.add_argument("--config", default="configs/default_config.yaml")
     parser.add_argument("--timesteps", type=int, default=2_000_000)
     parser.add_argument("--n-envs", type=int, default=os.cpu_count() or 4)
-    parser.add_argument("--ent-coef", type=float, default=0.01)
-    parser.add_argument("--out", default="model/agents/checkpoints/ppo_scheduler_full.zip")
+    parser.add_argument("--ent-coef", type=float, default=0.03)
+    parser.add_argument("--lstm-hidden-dim", type=int, default=64)
+    parser.add_argument("--out", default="model/agents/checkpoints/ppo_lstm_full.zip")
     parser.add_argument("--tensorboard-log", default="model/agents/tb_logs")
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
     parser.add_argument("--eval-freq", type=int, default=50_000)
@@ -48,8 +58,14 @@ def main():
 
     ckpt_dir = os.path.dirname(args.out) or "."
     os.makedirs(ckpt_dir, exist_ok=True)
-    best_dir = os.path.join(ckpt_dir, "best")
+    best_dir = os.path.join(ckpt_dir, "best") if not ckpt_dir.endswith("best") else ckpt_dir
     os.makedirs(best_dir, exist_ok=True)
+
+    policy_kwargs = dict(
+        features_extractor_class=PPOLSTMExtractor,
+        features_extractor_kwargs=dict(lstm_hidden_dim=args.lstm_hidden_dim, features_dim=256),
+        net_arch=dict(pi=[128, 64], vf=[128, 64]),
+    )
 
     if args.resume_from:
         model = PPO.load(args.resume_from, env=vec_env, tensorboard_log=args.tensorboard_log)
@@ -59,12 +75,7 @@ def main():
         model = PPO(
             "MultiInputPolicy", vec_env, verbose=1,
             tensorboard_log=args.tensorboard_log, ent_coef=args.ent_coef,
-            # Default net_arch (64x64) is too thin to learn per-band
-            # conditional value from a flattened 512-dim mostly-sparse
-            # band_tracks observation -- it was learning a coarse global
-            # prior over which band to camp on instead of reacting to
-            # per-episode state.
-            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
+            policy_kwargs=policy_kwargs,
         )
 
     checkpoint_callback = CheckpointCallback(
@@ -88,7 +99,7 @@ def main():
     )
 
     model.save(args.out)
-    print(f"Saved final PPO scheduler to {args.out}")
+    print(f"Saved final PPO+LSTM scheduler to {args.out}")
     print(f"Best model (by eval reward) saved under {best_dir}/best_model.zip")
 
 

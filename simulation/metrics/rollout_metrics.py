@@ -10,8 +10,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from simulation.environment.gym_env import AlterraEnv
-from simulation.environment.sensor_model import Detection
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from simulation.environment.gym_env import AlterraEnv
+    from simulation.environment.sensor_model import Detection
 
 
 @dataclass
@@ -60,7 +63,7 @@ class MetricsTracker:
         percent_correct = (hits + true_negatives) / total if total else 0.0
 
         avg_reward = float(np.mean(self.rewards)) if self.rewards else 0.0
-        avg_intercept_rate = hits / len(self.rewards) if self.rewards else 0.0
+        avg_intercept_rate = float(np.clip(hits / total, 0.0, 1.0)) if total else 0.0
 
         errors = []
         for emitter in env._emitters:  # ground-truth access, evaluation-only

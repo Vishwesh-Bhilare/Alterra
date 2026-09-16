@@ -13,8 +13,10 @@
 #pragma pop_macro("slots")
 #endif
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace py = pybind11;
@@ -267,7 +269,6 @@ private:
     py::object driver_;    // TraditionalScanDriver, only valid when mode_ != Rl
     py::object tracker_;
     py::object obs_;
-
     std::string repoRoot_;
     std::string configPath_;
     std::string modelPath_;
@@ -275,7 +276,6 @@ private:
     std::string loadedModelId_;   // which registry id is currently loaded into model_
     std::string activeModelId_;   // which registry id the live Simulation tab should use
     SchedulerMode mode_ = SchedulerMode::TraditionalSequential;
-
     ManualConfig lastManualConfig_;
     bool isCustom_ = false;
     std::vector<CustomEmitterRequest> customRequests_;

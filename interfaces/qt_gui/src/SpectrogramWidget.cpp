@@ -177,12 +177,22 @@ void SpectrogramWidget::paintEvent(QPaintEvent*) {
 
     drawAxes(painter, area);
 
-    // Trajectory: every past dwell, thin line colored by outcome.
-    for (const auto& seg : dwellSegments_) {
-        painter.setPen(QPen(outcomeColor(seg.outcome), 2));
+    // Trajectory: every past dwell, line colored by outcome, connected across dwells.
+    for (size_t i = 0; i < dwellSegments_.size(); ++i) {
+        const auto& seg = dwellSegments_[i];
         double x1 = timeToX(area, seg.startT);
         double x2 = timeToX(area, seg.endT);
         double y = freqToY(area, (seg.freqLoHz + seg.freqHiHz) / 2.0);
+
+        if (i > 0) {
+            const auto& prev = dwellSegments_[i - 1];
+            double prevX = timeToX(area, prev.endT);
+            double prevY = freqToY(area, (prev.freqLoHz + prev.freqHiHz) / 2.0);
+            painter.setPen(QPen(outcomeColor(seg.outcome), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawLine(QPointF(prevX, prevY), QPointF(x1, y));
+        }
+
+        painter.setPen(QPen(outcomeColor(seg.outcome), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawLine(QPointF(x1, y), QPointF(x2, y));
     }
 
