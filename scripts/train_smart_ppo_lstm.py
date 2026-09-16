@@ -104,13 +104,14 @@ def make_env_for_scenario(scenario_file: str | None, config_path: str = "configs
     return AlterraEnv(config)
 
 
-def generate_smart_dataset(episodes_per_scenario: int = 30):
+def generate_smart_dataset(episodes_per_scenario: int = 60):
     scenario_files = [
         "configs/scenarios/silent_gap_revisit.yaml",
         "configs/scenarios/mid_episode_burst.yaml",
         "configs/scenarios/fast_hopping_evasive.yaml",
         "configs/scenarios/periodic_scan_focus.yaml",
         "configs/scenarios/known_baseline.yaml",
+        "configs/scenarios/dense_congested.yaml",
         None,  # default random population curriculum
     ]
 
@@ -178,20 +179,24 @@ def train_smart_ppo_lstm():
         env,
         verbose=0,
         policy_kwargs=policy_kwargs,
-        learning_rate=1e-3,
+        learning_rate=3e-4,
+        n_steps=1024,
+        batch_size=64,
+        ent_coef=0.01,
     )
 
     # 1. Behavior Cloning on Multi-Scenario Expert Demonstrations
-    seq, rec, tracks, act_dir, act_dwell = generate_smart_dataset(episodes_per_scenario=30)
+    seq, rec, tracks, act_dir, act_dwell = generate_smart_dataset(episodes_per_scenario=60)
     dataset = TensorDataset(seq, rec, tracks, act_dir, act_dwell)
-    dataloader = DataLoader(dataset, batch_size=128, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
 
     policy = model.policy
     optimizer = optim.AdamW(policy.parameters(), lr=1e-3, weight_decay=1e-4)
-    loss_fn = nn.CrossEntropyLoss()
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-5)
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.01)
 
-    print("\nPhase 1: Multi-Scenario Neural Policy Training...")
-    for epoch in range(1, 16):
+    print("\nPhase 1: Deep Multi-Scenario Neural Policy Pretraining (20 Epochs)...")
+    for epoch in range(1, 21):
         total_loss = 0.0
         correct_dir = 0
         correct_dwell = 0
@@ -224,10 +229,12 @@ def train_smart_ppo_lstm():
             correct_dwell += (logits_dwell.argmax(dim=-1) == b_dwell).sum().item()
             total_samples += len(b_dir)
 
+        scheduler.step()
         acc_dir = correct_dir / total_samples * 100
         acc_dwell = correct_dwell / total_samples * 100
         avg_loss = total_loss / total_samples
-        print(f"  Epoch {epoch:02d} | Loss: {avg_loss:.4f} | Dir Acc: {acc_dir:.1f}% | Dwell Acc: {acc_dwell:.1f}%")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"  Epoch {epoch:02d} | Loss: {avg_loss:.4f} | Dir Acc: {acc_dir:.1f}% | Dwell Acc: {acc_dwell:.1f}% | LR: {current_lr:.6f}")
 
     # Save to best model checkpoints
     os.makedirs("model/agents/checkpoints/best", exist_ok=True)
