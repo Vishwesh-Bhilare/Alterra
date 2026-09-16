@@ -244,7 +244,7 @@ public:
     SchedulerMode mode() const { return mode_; }
 
 private:
-    void ensureModelLoaded();
+    void ensureModelLoaded(bool forceReload = false);
     static std::string modeToTraditionalString(SchedulerMode mode);  // "" for Rl
 
     // Shared by reconfigure()/setRandomPopulation()/setCustomComposition():

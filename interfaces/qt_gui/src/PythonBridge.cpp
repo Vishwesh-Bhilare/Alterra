@@ -73,8 +73,8 @@ std::string PythonBridge::modeToTraditionalString(SchedulerMode mode) {
     }
 }
 
-void PythonBridge::ensureModelLoaded() {
-    if (modelLoaded_ && loadedModelId_ == activeModelId_) return;
+void PythonBridge::ensureModelLoaded(bool forceReload) {
+    if (!forceReload && modelLoaded_ && loadedModelId_ == activeModelId_) return;
 
     if (activeModelId_.empty()) {
         throw PythonBridgeError(
@@ -221,7 +221,7 @@ void PythonBridge::reset(int seed) {
         }
 
         if (mode_ == SchedulerMode::Rl) {
-            ensureModelLoaded();
+            ensureModelLoaded(true);
             model_.attr("reset")();  // clears recurrent hidden state, no-op for plain PPO
             py::tuple result = env_.attr("reset")(py::arg("seed") = seed, py::arg("options") = optionsArg);
             obs_ = result[0];
