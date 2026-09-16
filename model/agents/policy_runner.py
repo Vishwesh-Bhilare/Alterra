@@ -58,3 +58,48 @@ def load_model(repo_root: str, model_id: str) -> PolicyRunner:
         model = PPO.load(path)
 
     return PolicyRunner(model, algo_class)
+
+
+if __name__ == "__main__":
+    import argparse
+    from simulation.environment.gym_env import AlterraEnv
+    from simulation.utils.config_loader import load_config
+
+    parser = argparse.ArgumentParser(description="Test PolicyRunner on Alterra environment")
+    parser.add_argument("--model", default="model/agents/checkpoints/best/best_model.zip", help="Path to checkpoint")
+    parser.add_argument("--algo", default="PPO", choices=["PPO", "RecurrentPPO"], help="Algorithm class")
+    parser.add_argument("--config", default="configs/default_config.yaml", help="Path to config")
+    parser.add_argument("--steps", type=int, default=50, help="Number of steps")
+    args = parser.parse_args()
+
+    print(f"[PolicyRunner] Loading {args.algo} model from: {args.model}")
+    if args.algo == "RecurrentPPO":
+        from sb3_contrib import RecurrentPPO
+        raw_model = RecurrentPPO.load(args.model)
+    else:
+        from stable_baselines3 import PPO
+        raw_model = PPO.load(args.model)
+
+    runner = PolicyRunner(raw_model, args.algo)
+    env = AlterraEnv(load_config(args.config))
+
+    obs, info = env.reset(seed=42)
+    runner.reset()
+
+    print(f"[PolicyRunner] Successfully initialized. Running {args.steps} test steps:")
+    hits = 0
+    total_reward = 0.0
+    for step in range(args.steps):
+        action = runner.predict(obs)
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
+        hit = bool(info.get("hit", False))
+        if hit:
+            hits += 1
+        if step < 10 or hit:
+            print(f"  Step {step:03d} | Band: {info.get('band_idx', 0):03d} | Dwell: {info.get('dwell_slots', 0):02d} | Hit: {hit} | Reward: {reward:+.2f}")
+        if terminated or truncated:
+            break
+
+    print(f"\n[PolicyRunner] Test run complete! Hits: {hits}/{args.steps}, Total Reward: {total_reward:.2f}")
+
