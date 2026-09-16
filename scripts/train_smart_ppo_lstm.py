@@ -30,7 +30,7 @@ from model.agents.lstm_policy import PPOLSTMExtractor
 class SmartExpertScheduler:
     """
     Intelligent expert scheduler that reasons over threat levels, staleness,
-    pattern locality, periodic spans, and dwell escalation.
+    pattern spans, periodic sweeps, and dwell escalation.
     """
     def __init__(self, num_bands: int = 128):
         self.num_bands = num_bands
@@ -48,33 +48,30 @@ class SmartExpertScheduler:
         current_band = int(np.clip(round(receiver[0] * (self.num_bands - 1)), 0, self.num_bands - 1))
         self.current_band = current_band
 
-        # 1. Active hit lock and proportional dwell escalation
-        if self.last_hit:
+        # 1. Active hit lock: dwell escalation (3 -> 5 -> 8 -> 12), max 4 consecutive dwells on same band
+        if self.last_hit and self.consecutive_hits < 4:
             self.consecutive_hits += 1
             dwell_idx = min(self.consecutive_hits, 3)
-            return 1, dwell_idx  # stay on active signal
+            return 1, dwell_idx
 
-        # 2. On miss / search: fast 3-slot probe (30ms)
+        # 2. On miss / exploitation done: fast 3-slot probe (30ms)
         self.consecutive_hits = 0
         dwell_idx = 0
 
         threats = tracks[:, 0] * 3.0
-        time_since_hit = tracks[:, 2]
         ever_hit = tracks[:, 3]
         time_since_visit = tracks[:, 4]
         scanned_ratio = receiver[8]
 
         hit_indices = np.where(ever_hit > 0.5)[0]
 
-        # 3. Priority Revisit & Periodic Pattern Tracking across all detected signals
-        if len(hit_indices) > 0 and scanned_ratio >= 0.50:
-            # Threat weights: Level 3 -> 3.0, Level 2 -> 2.0, Level 1 -> 1.0 (min 1.0)
+        # 3. Post-discovery tracking (after surveying spectrum or hitting boundary)
+        if len(hit_indices) > 0 and (scanned_ratio >= 0.70 or current_band >= 126 or (current_band <= 1 and scanned_ratio >= 0.35)):
             threat_weights = np.maximum(threats, 1.0)
             
-            # Revisit priority: proportional to threat level and staleness
             revisit_priority = np.where(
-                (ever_hit > 0.5) & (time_since_visit >= 0.15),
-                threat_weights * (1.0 + 2.5 * time_since_visit),
+                (ever_hit > 0.5) & (time_since_visit >= 0.08),
+                threat_weights * (1.0 + 3.0 * time_since_visit),
                 -999.0
             )
             revisit_priority[current_band] = -999.0
@@ -83,24 +80,12 @@ class SmartExpertScheduler:
             max_hit_b = int(np.max(hit_indices))
             span_width = max_hit_b - min_hit_b + 1
 
-            # Pattern / Periodic Span Identification:
-            # Genuine periodic scan pattern: multiple bands (>= 4) across a moderate span (6 <= span <= 24)
-            if len(hit_indices) >= 4 and 6 <= span_width <= 24:
+            # Pattern / Periodic Span Identification: width up to 32 covers active scan/hopper regions
+            if len(hit_indices) >= 3 and 5 <= span_width <= 32:
                 span_lo = max(0, min_hit_b - 1)
                 span_hi = min(self.num_bands - 1, max_hit_b + 1)
 
-                # Check if urgent high-threat target outside span requires attention
-                best_revisit = int(np.argmax(revisit_priority))
-                if revisit_priority[best_revisit] > 5.0 and not (span_lo <= best_revisit <= span_hi):
-                    target = best_revisit
-                    if target > current_band:
-                        self.sweep_dir = 1
-                        return 2, 0
-                    elif target < current_band:
-                        self.sweep_dir = -1
-                        return 0, 0
-
-                # Sweep within the active periodic pattern span
+                # Sweep within the active pattern span
                 if current_band >= span_hi:
                     self.sweep_dir = -1
                 elif current_band <= span_lo:
@@ -108,11 +93,10 @@ class SmartExpertScheduler:
 
                 dir_action = 2 if self.sweep_dir == 1 else 0
                 return dir_action, dwell_idx
-
             else:
-                # Discrete Emitters (Single or Dispersed): Priority Revisit when stale
+                # Discrete Emitter Revisit (e.g. Single Emitter at Band 111)
                 best_revisit = int(np.argmax(revisit_priority))
-                if revisit_priority[best_revisit] > 2.0:
+                if revisit_priority[best_revisit] > 1.2:
                     target = best_revisit
                     if target > current_band:
                         self.sweep_dir = 1
@@ -120,8 +104,19 @@ class SmartExpertScheduler:
                     elif target < current_band:
                         self.sweep_dir = -1
                         return 0, 0
+                elif len(hit_indices) == 1:
+                    # Single emitter: oscillate locally within +-4 bands of the emitter
+                    target = hit_indices[0]
+                    span_lo = max(0, target - 4)
+                    span_hi = min(self.num_bands - 1, target + 4)
+                    if current_band >= span_hi:
+                        self.sweep_dir = -1
+                    elif current_band <= span_lo:
+                        self.sweep_dir = 1
+                    dir_action = 2 if self.sweep_dir == 1 else 0
+                    return dir_action, dwell_idx
 
-        # 4. General survey sweep: maintain direction until boundary reflection
+        # 4. General survey sweep
         if current_band >= self.num_bands - 1:
             self.sweep_dir = -1
         elif current_band <= 0:
@@ -144,12 +139,13 @@ def make_env_for_scenario(scenario_file: str | None, config_path: str = "configs
     return AlterraEnv(config)
 
 
-def generate_smart_dataset(episodes_per_scenario: int = 60, random_population_episodes: int = 140):
+def generate_smart_dataset(episodes_per_scenario: int = 40, random_population_episodes: int = 80):
     scenario_files = [
         ("configs/scenarios/silent_gap_revisit.yaml", episodes_per_scenario),
         ("configs/scenarios/mid_episode_burst.yaml", episodes_per_scenario),
         ("configs/scenarios/fast_hopping_evasive.yaml", episodes_per_scenario),
         ("configs/scenarios/periodic_scan_focus.yaml", episodes_per_scenario),
+        ("configs/scenarios/custom_mix_multi_threat.yaml", episodes_per_scenario),
         ("configs/scenarios/known_baseline.yaml", episodes_per_scenario),
         ("configs/scenarios/dense_congested.yaml", episodes_per_scenario),
         ("configs/scenarios/sparse_single_threat.yaml", episodes_per_scenario),
@@ -237,8 +233,8 @@ def train_smart_ppo_lstm():
 
     # 1. Behavior Cloning on Multi-Scenario Expert Demonstrations
     seq, rec, tracks, act_dir, act_dwell = generate_smart_dataset(
-        episodes_per_scenario=60,
-        random_population_episodes=140,
+        episodes_per_scenario=40,
+        random_population_episodes=80,
     )
     dataset = TensorDataset(seq, rec, tracks, act_dir, act_dwell)
     dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
@@ -308,7 +304,7 @@ def train_smart_ppo_lstm():
         acc_dwell = correct_dwell / total_samples * 100
         avg_loss = total_loss / total_samples
         current_lr = scheduler.get_last_lr()[0]
-        print(f"  Epoch {epoch:02d} | Loss: {avg_loss:.4f} | Dir Acc: {acc_dir:.1f}% | Dwell Acc: {acc_dwell:.1f}% | LR: {current_lr:.6f}")
+        print(f"  Epoch {epoch:02d} | Loss: {avg_loss:.4f} | Dir Acc: {acc_dir:.1f}% | Dwell Acc: {acc_dwell:.1f}% | LR: {current_lr:.6f}", flush=True)
 
     # Move policy back to CPU for standard SB3 serialization
     policy.to("cpu")
