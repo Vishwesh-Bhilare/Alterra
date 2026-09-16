@@ -316,10 +316,10 @@ def train_smart_ppo_lstm():
     # Save to best model checkpoints
     os.makedirs("model/agents/checkpoints/best", exist_ok=True)
     os.makedirs("model/agents/checkpoints/targeted_lstm/best", exist_ok=True)
-    os.makedirs("model/agents/imported", exist_ok=True)
+    os.makedirs("model/agents/checkpoints/imported", exist_ok=True)
     save_path = "model/agents/checkpoints/best/best_model.zip"
     targeted_path = "model/agents/checkpoints/targeted_lstm/best/best_model.zip"
-    imported_path = "model/agents/imported/default_bundled_checkpoint_0446a5.zip"
+    imported_path = "model/agents/checkpoints/imported/default_bundled_checkpoint_0446a5.zip"
     model.save(save_path)
     model.save(targeted_path)
     model.save(imported_path)
