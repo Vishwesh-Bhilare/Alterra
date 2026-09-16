@@ -218,7 +218,7 @@ def _archetype_catalog() -> dict[str, dict]:
         "silent_gap_revisit": {
             "kind": "fixed", "threat_level": 3, "duty_cycle": 0.5,
             "mean_burst_slots": 20, "power_dbm": 18.0, "power_jitter_std_db": 1.0,
-            "active_windows": [[0, 300], [1700, 1950]],
+            "active_windows": [[0, 450], [1550, 1950]],
         },
         "fast_hopper": {
             "kind": "agile", "threat_level": 3, "hop_dwell_slots": 4,

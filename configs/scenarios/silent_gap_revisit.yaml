@@ -11,7 +11,7 @@ emitters:
     mean_burst_slots: 20
     power_dbm: 18.0
     power_jitter_std_db: 1.0
-    active_windows: [[0, 300], [1700, 1950]]
+    active_windows: [[0, 450], [1550, 1950]]
 
   - kind: fixed
     id: filler_hotel

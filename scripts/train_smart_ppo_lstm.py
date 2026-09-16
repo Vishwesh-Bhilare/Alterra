@@ -60,18 +60,25 @@ class SmartExpertScheduler:
 
         # Check for known high-threat targets needing revisit
         threats = tracks[:, 0] * 3.0
-        staleness = tracks[:, 2]
+        time_since_hit = tracks[:, 2]
         ever_hit = tracks[:, 3]
+        time_since_visit = tracks[:, 4]
+        scanned_ratio = receiver[8]
 
-        revisit_scores = ever_hit * (threats * 15.0 + staleness * 35.0 * (threats / 3.0))
+        # Only High Threat (Threat 3) warrants dedicated revisit, and only when spectrum is surveyed (scanned_ratio >= 0.70)
+        # and has been silent long enough to warrant a check (time_since_hit >= 0.35, time_since_visit >= 0.25)
+        eligible = (ever_hit > 0.5) & (threats >= 2.5) & (time_since_visit >= 0.25) & (time_since_hit >= 0.35)
+        revisit_scores = np.where(eligible, time_since_hit, -999.0)
         revisit_scores[current_band] = -999.0
 
         best_revisit = int(np.argmax(revisit_scores))
-        if revisit_scores[best_revisit] > 35.0:
+        if revisit_scores[best_revisit] > 0.35 and scanned_ratio >= 0.70:
             target = best_revisit
             if target > current_band:
+                self.sweep_dir = 1
                 return 2, 0
             elif target < current_band:
+                self.sweep_dir = -1
                 return 0, 0
 
         # General spectrum sweep
