@@ -29,8 +29,8 @@ from model.agents.lstm_policy import PPOLSTMExtractor
 
 class SmartExpertScheduler:
     """
-    Intelligent expert scheduler that reasons over threat levels, staleness,
-    pattern spans, periodic sweeps, and dwell escalation.
+    Intelligent expert scheduler that isolates contiguous periodic patterns,
+    draws down into the exact repeating pattern span, and prioritizes discrete revisits.
     """
     def __init__(self, num_bands: int = 128):
         self.num_bands = num_bands
@@ -41,6 +41,22 @@ class SmartExpertScheduler:
         self.consecutive_hits = 0
         self.last_hit = False
         self.sweep_dir = 1  # 1 = up, -1 = down
+        self.target_revisit_band = None
+
+    def find_clusters(self, hit_indices):
+        if len(hit_indices) == 0:
+            return []
+        sorted_hits = np.sort(hit_indices)
+        clusters = []
+        curr = [sorted_hits[0]]
+        for b in sorted_hits[1:]:
+            if b - curr[-1] <= 2:  # strict contiguous cluster
+                curr.append(b)
+            else:
+                clusters.append(curr)
+                curr = [b]
+        clusters.append(curr)
+        return clusters
 
     def get_action(self, obs: dict) -> tuple[int, int]:
         tracks = obs["band_tracks"]     # (128, 8)
@@ -54,9 +70,11 @@ class SmartExpertScheduler:
             dwell_idx = min(self.consecutive_hits, 3)
             return 1, dwell_idx
 
-        # 2. On miss / exploitation done: fast 3-slot probe (30ms)
         self.consecutive_hits = 0
         dwell_idx = 0
+
+        if self.target_revisit_band == current_band:
+            self.target_revisit_band = None
 
         threats = tracks[:, 0] * 3.0
         ever_hit = tracks[:, 3]
@@ -65,63 +83,111 @@ class SmartExpertScheduler:
 
         hit_indices = np.where(ever_hit > 0.5)[0]
 
-        # 3. Post-discovery tracking (after surveying spectrum or hitting boundary)
-        if len(hit_indices) > 0 and (scanned_ratio >= 0.70 or current_band >= 126 or (current_band <= 1 and scanned_ratio >= 0.35)):
-            threat_weights = np.maximum(threats, 1.0)
-            
-            revisit_priority = np.where(
-                (ever_hit > 0.5) & (time_since_visit >= 0.08),
-                threat_weights * (1.0 + 3.0 * time_since_visit),
-                -999.0
-            )
-            revisit_priority[current_band] = -999.0
+        # 2. Post-discovery: identify periodic pattern and draw down
+        if len(hit_indices) > 0 and (scanned_ratio >= 0.50 or current_band >= 126 or (current_band <= 1 and scanned_ratio >= 0.35)):
+            clusters = self.find_clusters(hit_indices)
 
-            min_hit_b = int(np.min(hit_indices))
-            max_hit_b = int(np.max(hit_indices))
-            span_width = max_hit_b - min_hit_b + 1
+            # A true periodic scan pattern is a contiguous cluster with >= 5 bands and width <= 20
+            periodic_pattern = None
+            other_emitters = []
+            for c in clusters:
+                w = c[-1] - c[0] + 1
+                density = len(c) / max(w, 1)
+                if len(c) >= 5 and 5 <= w <= 20 and density >= 0.7:
+                    if periodic_pattern is None or len(c) > len(periodic_pattern):
+                        if periodic_pattern is not None:
+                            other_emitters.extend(periodic_pattern)
+                        periodic_pattern = c
+                    else:
+                        other_emitters.extend(c)
+                else:
+                    other_emitters.extend(c)
 
-            # Pattern / Periodic Span Identification: width up to 32 covers active scan/hopper regions
-            if len(hit_indices) >= 3 and 5 <= span_width <= 32:
-                span_lo = max(0, min_hit_b - 1)
-                span_hi = min(self.num_bands - 1, max_hit_b + 1)
+            # Check if an external high-threat emitter needs a quick revisit
+            urgent_revisit = None
+            highest_score = 0.0
+            for b in other_emitters:
+                staleness = time_since_visit[b]
+                threat = max(threats[b], 1.0)
+                score = threat * (1.0 + 3.0 * staleness)
+                if staleness >= 0.15 and score > 2.8:
+                    if score > highest_score:
+                        highest_score = score
+                        urgent_revisit = b
 
-                # Sweep within the active pattern span
-                if current_band >= span_hi:
-                    self.sweep_dir = -1
-                elif current_band <= span_lo:
+            if urgent_revisit is not None:
+                self.target_revisit_band = urgent_revisit
+                if urgent_revisit > current_band:
                     self.sweep_dir = 1
+                    return 2, 0
+                elif urgent_revisit < current_band:
+                    self.sweep_dir = -1
+                    return 0, 0
+                else:
+                    return 1, 0
 
-                dir_action = 2 if self.sweep_dir == 1 else 0
-                return dir_action, dwell_idx
-            else:
-                # Discrete Emitter Revisit (e.g. Single Emitter at Band 111)
-                best_revisit = int(np.argmax(revisit_priority))
-                if revisit_priority[best_revisit] > 1.2:
-                    target = best_revisit
-                    if target > current_band:
-                        self.sweep_dir = 1
-                        return 2, 0
-                    elif target < current_band:
+            if self.target_revisit_band is not None and self.target_revisit_band != current_band:
+                if self.target_revisit_band > current_band:
+                    self.sweep_dir = 1
+                    return 2, 0
+                else:
+                    self.sweep_dir = -1
+                    return 0, 0
+
+            # If periodic pattern is found: DRAW DOWN STRICTLY INTO THE PATTERN!
+            if periodic_pattern is not None:
+                pat_lo = periodic_pattern[0]
+                pat_hi = periodic_pattern[-1]
+
+                # If outside pattern span, step directly toward it
+                if current_band < pat_lo:
+                    self.sweep_dir = 1
+                    return 2, 0
+                elif current_band > pat_hi:
+                    self.sweep_dir = -1
+                    return 0, 0
+                else:
+                    # Inside pattern span: sweep strictly between pat_lo and pat_hi
+                    if current_band >= pat_hi:
                         self.sweep_dir = -1
-                        return 0, 0
-                elif len(hit_indices) == 1:
-                    # Single emitter: oscillate locally within +-4 bands of the emitter
-                    target = hit_indices[0]
-                    span_lo = max(0, target - 4)
-                    span_hi = min(self.num_bands - 1, target + 4)
-                    if current_band >= span_hi:
-                        self.sweep_dir = -1
-                    elif current_band <= span_lo:
+                    elif current_band <= pat_lo:
                         self.sweep_dir = 1
                     dir_action = 2 if self.sweep_dir == 1 else 0
                     return dir_action, dwell_idx
 
-        # 4. General survey sweep
+            # If no periodic pattern: discrete emitter revisit
+            threat_weights = np.maximum(threats, 1.0)
+            revisit_priority = np.where(
+                (ever_hit > 0.5) & (time_since_visit >= 0.04),
+                threat_weights * (1.0 + 3.0 * time_since_visit),
+                -999.0
+            )
+            revisit_priority[current_band] = -999.0
+            best = int(np.argmax(revisit_priority))
+            if revisit_priority[best] > 1.2:
+                if best > current_band:
+                    self.sweep_dir = 1
+                    return 2, 0
+                elif best < current_band:
+                    self.sweep_dir = -1
+                    return 0, 0
+            elif len(hit_indices) == 1:
+                # Oscillate locally near single emitter
+                b = hit_indices[0]
+                span_lo = max(0, b - 4)
+                span_hi = min(self.num_bands - 1, b + 4)
+                if current_band >= span_hi:
+                    self.sweep_dir = -1
+                elif current_band <= span_lo:
+                    self.sweep_dir = 1
+                dir_action = 2 if self.sweep_dir == 1 else 0
+                return dir_action, dwell_idx
+
+        # 3. Initial survey sweep
         if current_band >= self.num_bands - 1:
             self.sweep_dir = -1
         elif current_band <= 0:
             self.sweep_dir = 1
-
         dir_action = 2 if self.sweep_dir == 1 else 0
         return dir_action, dwell_idx
 
