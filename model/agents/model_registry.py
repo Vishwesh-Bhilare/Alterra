@@ -1,11 +1,10 @@
 """
-Registry of imported RL checkpoints (Module G) -- lets any teammate's
-trained model (plain stable_baselines3 PPO, or sb3-contrib RecurrentPPO
-for LSTM/RNN policies) be dropped into the GUI without editing code.
-Models are copied into model/agents/checkpoints/imported/ and tracked in
-a manifest.json there; the GUI's "Import Model..." dialog is the only
-way entries get added -- no folder auto-scanning, per the scope decided
-before building this.
+Registry of imported RL checkpoints -- lets any trained model (plain
+stable_baselines3 PPO, sb3-contrib RecurrentPPO, or sb3-contrib
+MaskablePPO for the hybrid doctrine+ML scheduler) be dropped into the GUI
+without editing code. Models are copied into
+model/agents/checkpoints/imported/ and tracked in manifest.json there;
+the GUI's "Import Model..." dialog is the only way entries get added.
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-VALID_ALGO_CLASSES = ("PPO", "RecurrentPPO")
+VALID_ALGO_CLASSES = ("PPO", "RecurrentPPO", "MaskablePPO")
 
 
 def _registry_dir(repo_root: str | Path) -> Path:
@@ -47,7 +46,6 @@ def _save_manifest(repo_root: str | Path, models: list[dict]) -> None:
 
 
 def list_models(repo_root: str | Path) -> list[dict]:
-    """Each entry: {"id", "label", "algo_class", "filename"}."""
     return _load_manifest(repo_root)
 
 

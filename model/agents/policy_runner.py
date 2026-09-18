@@ -1,12 +1,14 @@
 """
-Unified stepping interface across plain stable_baselines3 algorithms
-(PPO) and recurrent ones (sb3-contrib RecurrentPPO). Recurrent policies
-need their LSTM hidden state carried across predict() calls plus an
-episode_start flag that must be True only on the very first step of an
-episode -- PolicyRunner hides that bookkeeping so callers (live
-simulation stepping in PythonBridge, and multi-model comparison runs)
-use the same .reset()/.predict(obs) interface regardless of which kind
-of model is loaded.
+Unified stepping interface across plain stable_baselines3 PPO,
+sb3-contrib RecurrentPPO, and sb3-contrib MaskablePPO (the hybrid
+doctrine+ML scheduler). Recurrent policies need LSTM hidden state carried
+across predict() calls; maskable policies need the env's current
+action_masks() passed in every predict() call. PolicyRunner hides both,
+so callers (PythonBridge, comparison.py) use the same
+.reset()/.predict(obs, action_masks=...) interface regardless of model
+kind -- pass action_masks whenever runner.needs_action_mask is True
+(fetched from env.action_masks(); harmless no-op for non-maskable models
+if passed anyway, since it's simply ignored).
 """
 from __future__ import annotations
 
@@ -22,11 +24,15 @@ class PolicyRunner:
         self._lstm_states = None
         self._episode_start = True
 
+    @property
+    def needs_action_mask(self) -> bool:
+        return self.algo_class == "MaskablePPO"
+
     def reset(self) -> None:
         self._lstm_states = None
         self._episode_start = True
 
-    def predict(self, obs):
+    def predict(self, obs, action_masks=None):
         if self.algo_class == "RecurrentPPO":
             action, self._lstm_states = self.model.predict(
                 obs,
@@ -36,6 +42,13 @@ class PolicyRunner:
             )
             self._episode_start = False
             return action
+
+        if self.algo_class == "MaskablePPO":
+            action, _ = self.model.predict(
+                obs, action_masks=action_masks, deterministic=True
+            )
+            return action
+
         action, _ = self.model.predict(obs, deterministic=True)
         return action
 
@@ -53,6 +66,15 @@ def load_model(repo_root: str, model_id: str) -> PolicyRunner:
                 "Install it with `pip install sb3-contrib`."
             ) from e
         model = RecurrentPPO.load(path)
+    elif algo_class == "MaskablePPO":
+        try:
+            from sb3_contrib import MaskablePPO
+        except ImportError as e:
+            raise RuntimeError(
+                "sb3-contrib is required to load MaskablePPO checkpoints. "
+                "Install it with `pip install sb3-contrib`."
+            ) from e
+        model = MaskablePPO.load(path)
     else:
         from stable_baselines3 import PPO
         model = PPO.load(path)

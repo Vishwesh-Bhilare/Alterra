@@ -1,10 +1,21 @@
 """
-Runs any mix of RL policies (via PolicyRunner -- so plain PPO and
-sb3-contrib RecurrentPPO/LSTM models are stepped identically) and the two
-traditional baselines on identical, reproducible episodes (same seed,
-same emitter population per sub-run -- built fresh per sub-run since
-emitter objects are stateful) for direct side-by-side comparison of the
-figures of merit called out in the problem statement.
+Runs any mix of RL policies (via PolicyRunner) and the two traditional
+baselines on identical, reproducible episodes for direct side-by-side
+comparison of the figures of merit called out in the problem statement.
+
+Job dict, one of:
+  {"label": str, "kind": "rl", "runner": PolicyRunner,
+   "manual_emitters": list|None, "hybrid": bool}
+  {"label": str, "kind": "traditional", "mode": "sequential"|"balanced_random",
+   "manual_emitters": list|None}
+
+"hybrid": True is REQUIRED for any MaskablePPO job -- it's what tells
+_run_rl to build the env with enable_doctrine=True (so action_masks()
+reflects real doctrine state) and to fetch+pass masks every predict()
+call. Without it, a MaskablePPO checkpoint would see an all-legal mask
+from a non-doctrine env and behave as unconstrained PPO. manual_emitters
+must be an independently-built population per job (never the same list
+object reused across jobs) whenever a custom mix is active.
 """
 from __future__ import annotations
 
@@ -37,8 +48,8 @@ def _run_traditional(config: AlterraConfig, seed: int, mode: str, manual_emitter
     return tracker.finalize(env)
 
 
-def _run_rl(config: AlterraConfig, seed: int, runner, manual_emitters) -> EpisodeMetrics:
-    env = AlterraEnv(config)
+def _run_rl(config: AlterraConfig, seed: int, runner, manual_emitters, hybrid: bool = False) -> EpisodeMetrics:
+    env = AlterraEnv(config, enable_doctrine=hybrid)
     options = {"manual_emitters": manual_emitters} if manual_emitters is not None else None
     obs, _ = env.reset(seed=seed, options=options)
     runner.reset()
@@ -46,27 +57,21 @@ def _run_rl(config: AlterraConfig, seed: int, runner, manual_emitters) -> Episod
     tracker = MetricsTracker()
     truncated = False
     while not truncated:
-        action = runner.predict(obs)
+        masks = env.action_masks() if runner.needs_action_mask else None
+        action = runner.predict(obs, action_masks=masks)
         obs, reward, terminated, truncated, info = env.step(action)
         tracker.record_step(env.last_dwell_result, reward)
     return tracker.finalize(env)
 
 
 def run_comparison(config: AlterraConfig, seed: int, jobs: list[dict[str, Any]]) -> list[ComparisonRow]:
-    """Each job dict is one of:
-      {"label": str, "kind": "rl", "runner": PolicyRunner, "manual_emitters": list|None}
-      {"label": str, "kind": "traditional", "mode": "sequential"|"balanced_random", "manual_emitters": list|None}
-
-    manual_emitters must be an independently-built population per job
-    (never the same list object reused across jobs) whenever a custom mix
-    is active -- see PythonBridge::runComparison, which builds one fresh
-    population per job before calling this, so results stay reproducible
-    and independent per job.
-    """
     rows = []
     for job in jobs:
         if job["kind"] == "rl":
-            metrics = _run_rl(config, seed, job["runner"], job["manual_emitters"])
+            metrics = _run_rl(
+                config, seed, job["runner"], job["manual_emitters"],
+                hybrid=job.get("hybrid", False),
+            )
         elif job["kind"] == "traditional":
             metrics = _run_traditional(config, seed, job["mode"], job["manual_emitters"])
         else:
