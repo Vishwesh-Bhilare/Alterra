@@ -94,7 +94,8 @@ def _survey_mask(
 
 
 def _investigate_mask(
-    tracks: dict[int, BandTrack], num_bands: int, current_band: int | None, step_count: int
+    state: DoctrineState, tracks: dict[int, BandTrack], num_bands: int,
+    current_band: int | None, step_count: int
 ) -> np.ndarray:
     mask = np.zeros(num_bands, dtype=bool)
     hit_bands = [b for b, t in tracks.items() if t.ever_hit]
@@ -102,6 +103,14 @@ def _investigate_mask(
         return mask
     if current_band is not None and len(hit_bands) > 1:
         hit_bands = [b for b in hit_bands if b != current_band]
+    # Exclude the recent trajectory, same as _survey_mask/_relocate_mask --
+    # without this, two bands can dominate the top-6 ranking and MaskablePPO
+    # has nothing preventing it from oscillating between exactly those two
+    # (observed: 13 consecutive decisions alternating bands 117/65, mostly
+    # misses, before a real hit finally landed elsewhere).
+    non_recent = [b for b in hit_bands if b not in state.recent_bands]
+    if non_recent:
+        hit_bands = non_recent
     if not hit_bands:
         return mask
 
@@ -110,7 +119,11 @@ def _investigate_mask(
         age = max(0, step_count - (t.last_visited_t or 0))
         stale = min(1.0, age / 120.0)
         confirms = min(1.0, t.hit_count / 3.0)
-        return 0.40 * confirms + 0.20 * stale + 0.40 * t.confidence
+        # Deprioritize bands that used to hit but have gone quiet recently,
+        # faster than staleness alone catches -- staleness resets on every
+        # revisit (even unproductive ones), miss_streak does not.
+        miss_penalty = min(1.0, t.miss_streak / 5.0)
+        return 0.40 * confirms + 0.20 * stale + 0.40 * t.confidence - 0.25 * miss_penalty
 
     ranked = sorted(hit_bands, key=score, reverse=True)
     for b in ranked[: min(6, len(ranked))]:
@@ -152,7 +165,7 @@ def decide(
     if num_bands - len(tracks) > 0:
         return DoctrineDecision("EXPLORE", _survey_mask(state, tracks, num_bands, current_band), 0)
 
-    investigate_mask = _investigate_mask(tracks, num_bands, current_band, state.step_count)
+    investigate_mask = _investigate_mask(state, tracks, num_bands, current_band, state.step_count)
     if investigate_mask.any():
         return DoctrineDecision("INVESTIGATE", investigate_mask, 1)
 

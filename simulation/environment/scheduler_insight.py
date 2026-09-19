@@ -28,6 +28,7 @@ class BandTrack:
     visit_count: int = 0
     last_measured_power_norm: float = 0.0
     power_history: deque = field(default_factory=deque)  # bounded at creation time, see below
+    miss_streak: int = 0  # consecutive dwells on this band with no hit; reset to 0 on any hit
 
 
 @dataclass(frozen=True)

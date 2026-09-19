@@ -374,8 +374,14 @@ class AlterraEnv(gym.Env):
 
         best_hit = dwell_result.best_hit
         if best_hit is None:
+            # Doctrine's INVESTIGATE mode uses this to deprioritize a band
+            # that used to be productive but has gone quiet, faster than
+            # staleness alone would (staleness resets on every revisit,
+            # even unproductive ones -- miss_streak does not).
+            track.miss_streak += 1
             return
 
+        track.miss_streak = 0
         track.threat_level = (
             best_hit.true_threat_level or track.threat_level
         )
