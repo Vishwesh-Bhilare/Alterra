@@ -7,8 +7,10 @@
 #include <QRandomGenerator>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QInputDialog>
 #include <QDialog>
+#include <QDialogButtonBox>
+#include <QFileInfo>
+#include <QFormLayout>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QApplication>
@@ -191,16 +193,52 @@ void MainWindow::onImportModel() {
     QString sourcePath = QFileDialog::getOpenFileName(this, "Select model checkpoint to import", QString(), "SB3 checkpoint (*.zip)");
     if (sourcePath.isEmpty()) return;
 
-    bool ok = false;
-    QString label = QInputDialog::getText(this, "Model label", "Display name for this model:", QLineEdit::Normal, QString(), &ok);
-    if (!ok || label.isEmpty()) return;
+    // The checkpoint type is part of the model's runtime contract.  In
+    // particular, a hybrid checkpoint must be loaded as MaskablePPO so the
+    // bridge enables doctrine mode and supplies action masks on every step.
+    // Do not infer this from the main model row: that control often still
+    // contains its default PPO value when a user launches the GUI normally.
+    QDialog dialog(this);
+    dialog.setWindowTitle("Import Model");
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    auto* labelEdit = new QLineEdit(QFileInfo(sourcePath).completeBaseName(), &dialog);
+    auto* algorithmCombo = new QComboBox(&dialog);
+    algorithmCombo->addItem("PPO", "PPO");
+    algorithmCombo->addItem("RecurrentPPO", "RecurrentPPO");
+    algorithmCombo->addItem("Hybrid (MaskablePPO)", "MaskablePPO");
+    const int currentAlgorithm = algorithmCombo->findData(algoCombo_->currentData());
+    if (currentAlgorithm >= 0) algorithmCombo->setCurrentIndex(currentAlgorithm);
+    form->addRow("Display name:", labelEdit);
+    form->addRow("Algorithm:", algorithmCombo);
+    layout->addLayout(form);
 
-    std::string algoClass = algoClassFromCombo();
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    const QString label = labelEdit->text().trimmed();
+    if (label.isEmpty()) {
+        QMessageBox::warning(this, "Import cancelled", "A display name is required.");
+        return;
+    }
+    const std::string algoClass = algorithmCombo->currentData().toString().toStdString();
 
     try {
         ModelEntry entry = bridge_->importModel(sourcePath.toStdString(), label.toStdString(), algoClass);
         refreshRegisteredModels(entry.id);
-        log_->appendPlainText(QString("--- Imported model '%1' (%2) ---").arg(label).arg(QString::fromStdString(algoClass)));
+        // Importing is the normal-launch equivalent of passing a checkpoint
+        // and algorithm on the command line: activate the imported model
+        // immediately rather than leaving the simulation to step randomly.
+        modelPathEdit_->setText(QString::fromStdString(entry.path));
+        const int algorithmIndex = algoCombo_->findData(QString::fromStdString(entry.algoClass));
+        if (algorithmIndex >= 0) algoCombo_->setCurrentIndex(algorithmIndex);
+        bridge_->loadModel(entry.path, entry.algoClass);
+        onResetEpisode();
+        log_->appendPlainText(QString("--- Imported and loaded model '%1' (%2) ---")
+            .arg(label).arg(QString::fromStdString(algoClass)));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, "Import failed", QString::fromStdString(e.what()));
     }
