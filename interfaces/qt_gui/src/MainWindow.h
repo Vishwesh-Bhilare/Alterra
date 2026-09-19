@@ -19,9 +19,6 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(const std::string& repoRoot, const std::string& configPath, QWidget* parent = nullptr);
-
-    // Optional: preload a model at startup (e.g. from argv) without
-    // going through the GUI controls first.
     void preloadModel(const std::string& modelPath, const std::string& algoClass);
 
 private Q_SLOTS:
@@ -33,6 +30,10 @@ private Q_SLOTS:
     void onSpeedChanged(int value);
     void onBrowseModel();
     void onLoadModel();
+    void onImportModel();
+    void onRegisteredModelSelected(int index);
+    void onScenarioSelected(int index);
+    void onRunComparison();
 
 private:
     std::string repoRoot_;
@@ -53,6 +54,11 @@ private:
     QComboBox* algoCombo_;
     QPushButton* browseButton_;
     QPushButton* loadModelButton_;
+    QPushButton* importModelButton_;
+    QComboBox* registeredModelsCombo_;
+
+    QComboBox* scenarioCombo_;
+    QPushButton* runComparisonButton_;
 
     QTimer* timer_;
     bool running_ = false;
@@ -61,4 +67,6 @@ private:
     std::string algoClassFromCombo() const;
     void doStep();
     void updateMetricsLabel();
+    void refreshRegisteredModels(const std::string& selectId = "");
+    void refreshScenarios();
 };

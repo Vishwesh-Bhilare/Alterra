@@ -13,12 +13,12 @@ PythonBridge::PythonBridge(const std::string& repoRoot, const std::string& confi
     envModule_ = py::module_::import("simulation.environment");
     metricsModule_ = py::module_::import("simulation.metrics");
     policyRunnerModule_ = py::module_::import("model.agents.policy_runner");
+    modelRegistryModule_ = py::module_::import("model.agents.model_registry");
+    guiComparisonModule_ = py::module_::import("model.agents.gui_comparison");
 
     tracker_ = metricsModule_.attr("MetricsTracker")();
     runner_ = py::none();
 
-    // Default env (non-hybrid) so the GUI is steppable/reset-able before
-    // any model is loaded -- step() falls back to random actions.
     env_ = envModule_.attr("AlterraEnv")(config_, py::arg("enable_doctrine") = false);
     reset(0);
 }
@@ -46,8 +46,71 @@ void PythonBridge::loadModel(const std::string& modelPath, const std::string& al
     reset(0);
 }
 
+std::vector<ModelEntry> PythonBridge::listRegisteredModels() const {
+    py::list entries = modelRegistryModule_.attr("list_models")(repoRoot_);
+    std::vector<ModelEntry> result;
+    for (auto item : entries) {
+        py::dict d = item.cast<py::dict>();
+        ModelEntry e;
+        e.id = d["id"].cast<std::string>();
+        e.label = d["label"].cast<std::string>();
+        e.algoClass = d["algo_class"].cast<std::string>();
+        e.path = modelRegistryModule_.attr("resolve_model_path")(repoRoot_, e.id).cast<std::string>();
+        result.push_back(e);
+    }
+    return result;
+}
+
+ModelEntry PythonBridge::importModel(const std::string& sourcePath, const std::string& label, const std::string& algoClass) {
+    py::dict entry = modelRegistryModule_.attr("register_model")(repoRoot_, sourcePath, label, algoClass);
+    ModelEntry e;
+    e.id = entry["id"].cast<std::string>();
+    e.label = entry["label"].cast<std::string>();
+    e.algoClass = entry["algo_class"].cast<std::string>();
+    e.path = modelRegistryModule_.attr("resolve_model_path")(repoRoot_, e.id).cast<std::string>();
+    return e;
+}
+
+std::vector<std::string> PythonBridge::listScenarios() const {
+    py::list names = guiComparisonModule_.attr("list_scenarios")(repoRoot_);
+    std::vector<std::string> result;
+    for (auto n : names) result.push_back(n.cast<std::string>());
+    return result;
+}
+
+void PythonBridge::setScenario(const std::string& scenarioFilename) {
+    currentScenario_ = scenarioFilename;
+}
+
+std::vector<ComparisonRow> PythonBridge::runComparison(int seed) {
+    py::object scenarioArg = currentScenario_.empty() ? py::object(py::none()) : py::cast(currentScenario_);
+    py::list rows = guiComparisonModule_.attr("run_full_comparison")(repoRoot_, config_, seed, scenarioArg);
+
+    std::vector<ComparisonRow> result;
+    for (auto item : rows) {
+        py::dict d = item.cast<py::dict>();
+        ComparisonRow r;
+        r.label = d["label"].cast<std::string>();
+        r.pd = d["pd"].cast<double>();
+        r.pfa = d["pfa"].cast<double>();
+        r.avgInterceptRate = d["avg_intercept_rate"].cast<double>();
+        r.percentCorrect = d["percent_correct"].cast<double>();
+        r.avgReward = d["avg_reward"].cast<double>();
+        result.push_back(r);
+    }
+    return result;
+}
+
 void PythonBridge::reset(int seed) {
-    py::tuple result = env_.attr("reset")(py::arg("seed") = seed);
+    py::tuple result;
+    if (!currentScenario_.empty()) {
+        py::object emitters = guiComparisonModule_.attr("build_scenario_emitters")(config_, repoRoot_, currentScenario_);
+        py::dict options;
+        options["manual_emitters"] = emitters;
+        result = env_.attr("reset")(py::arg("seed") = seed, py::arg("options") = options);
+    } else {
+        result = env_.attr("reset")(py::arg("seed") = seed);
+    }
     obs_ = result[0];
     tracker_ = metricsModule_.attr("MetricsTracker")();
     if (hasModel_) {
@@ -85,13 +148,8 @@ StepResult PythonBridge::step() {
     r.truncated = truncated;
     r.measuredPowerDbm = dwellResult.attr("mean_measured_power_dbm").cast<double>();
 
-    // Convert the selected band into its actual RF frequency interval.
-    // The receiver bandwidth matches one spectrum band in the current config.
-    const double bandStartFreqHz =
-        config_.attr("spectrum").attr("band_start_freq_hz").cast<double>();
-    const double bandBandwidthHz =
-        config_.attr("spectrum").attr("band_bandwidth_hz").cast<double>();
-
+    const double bandStartFreqHz = config_.attr("spectrum").attr("band_start_freq_hz").cast<double>();
+    const double bandBandwidthHz = config_.attr("spectrum").attr("band_bandwidth_hz").cast<double>();
     r.freqLoHz = bandStartFreqHz + r.band * bandBandwidthHz;
     r.freqHiHz = r.freqLoHz + bandBandwidthHz;
 
@@ -100,7 +158,6 @@ StepResult PythonBridge::step() {
     } else if (r.falseAlarm) {
         r.dwellOutcome = DwellOutcome::FalseAlarm;
     } else {
-        // No detection during this dwell.
         r.dwellOutcome = DwellOutcome::Miss;
     }
 

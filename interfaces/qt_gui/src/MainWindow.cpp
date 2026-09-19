@@ -7,6 +7,11 @@
 #include <QRandomGenerator>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QInputDialog>
+#include <QDialog>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QApplication>
 
 MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPath, QWidget* parent)
     : QMainWindow(parent), repoRoot_(repoRoot), configPath_(configPath) {
@@ -15,7 +20,7 @@ MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPat
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
 
-    // --- Model loading row ---
+    // --- Model row ---
     auto* modelRow = new QWidget(central);
     auto* modelRowLayout = new QHBoxLayout(modelRow);
     modelRowLayout->addWidget(new QLabel("Model:", modelRow));
@@ -27,12 +32,30 @@ MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPat
     algoCombo_->addItem("RecurrentPPO", "RecurrentPPO");
     algoCombo_->addItem("Hybrid (MaskablePPO)", "MaskablePPO");
     loadModelButton_ = new QPushButton("Load Model", modelRow);
+    importModelButton_ = new QPushButton("Import Model...", modelRow);
+    registeredModelsCombo_ = new QComboBox(modelRow);
+    registeredModelsCombo_->setMinimumWidth(180);
 
     modelRowLayout->addWidget(modelPathEdit_, 1);
     modelRowLayout->addWidget(browseButton_);
     modelRowLayout->addWidget(algoCombo_);
     modelRowLayout->addWidget(loadModelButton_);
+    modelRowLayout->addWidget(importModelButton_);
+    modelRowLayout->addWidget(new QLabel("Registered:", modelRow));
+    modelRowLayout->addWidget(registeredModelsCombo_);
     layout->addWidget(modelRow);
+
+    // --- Scenario + comparison row ---
+    auto* scenarioRow = new QWidget(central);
+    auto* scenarioRowLayout = new QHBoxLayout(scenarioRow);
+    scenarioRowLayout->addWidget(new QLabel("Scenario:", scenarioRow));
+    scenarioCombo_ = new QComboBox(scenarioRow);
+    scenarioCombo_->setMinimumWidth(220);
+    scenarioRowLayout->addWidget(scenarioCombo_);
+    runComparisonButton_ = new QPushButton("Run Comparison", scenarioRow);
+    scenarioRowLayout->addWidget(runComparisonButton_);
+    scenarioRowLayout->addStretch(1);
+    layout->addWidget(scenarioRow);
 
     // --- Playback controls row ---
     auto* controls = new QWidget(central);
@@ -64,11 +87,9 @@ MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPat
 
     metricsLabel_ = new QLabel("Pd: -   Pfa: -   Intercept rate: -   Avg reward: -", central);
     layout->addWidget(metricsLabel_);
-
     signalLabel_ = new QLabel("Signal: -", central);
     layout->addWidget(signalLabel_);
-
-    modeLabel_ = new QLabel("Doctrine mode: n/a (no model loaded)", central);
+    modeLabel_ = new QLabel("Doctrine mode: n/a (no model loaded — stepping randomly)", central);
     layout->addWidget(modeLabel_);
 
     spectrogram_ = new SpectrogramWidget(central);
@@ -80,7 +101,7 @@ MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPat
     layout->addWidget(log_, 1);
 
     setCentralWidget(central);
-    resize(1000, 780);
+    resize(1100, 820);
     setWindowTitle("Alterra — CORTEX Smart Scan Scheduler");
 
     connect(startStopButton_, &QPushButton::clicked, this, &MainWindow::onStartStop);
@@ -90,11 +111,19 @@ MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPat
     connect(speedSlider_, &QSlider::valueChanged, this, &MainWindow::onSpeedChanged);
     connect(browseButton_, &QPushButton::clicked, this, &MainWindow::onBrowseModel);
     connect(loadModelButton_, &QPushButton::clicked, this, &MainWindow::onLoadModel);
+    connect(importModelButton_, &QPushButton::clicked, this, &MainWindow::onImportModel);
+    connect(registeredModelsCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onRegisteredModelSelected);
+    connect(scenarioCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onScenarioSelected);
+    connect(runComparisonButton_, &QPushButton::clicked, this, &MainWindow::onRunComparison);
 
     timer_ = new QTimer(this);
     connect(timer_, &QTimer::timeout, this, &MainWindow::onTick);
     timer_->setInterval(speedSlider_->value());
 
+    refreshRegisteredModels();
+    refreshScenarios();
     onResetEpisode();
 }
 
@@ -109,6 +138,74 @@ std::string MainWindow::algoClassFromCombo() const {
     return algoCombo_->currentData().toString().toStdString();
 }
 
+void MainWindow::refreshRegisteredModels(const std::string& selectId) {
+    registeredModelsCombo_->blockSignals(true);
+    registeredModelsCombo_->clear();
+    registeredModelsCombo_->addItem("(none selected)", "");
+
+    auto models = bridge_->listRegisteredModels();
+    int selectIndex = 0;
+    for (size_t i = 0; i < models.size(); ++i) {
+        const auto& m = models[i];
+        QString display = QString("%1  [%2]").arg(QString::fromStdString(m.label)).arg(QString::fromStdString(m.algoClass));
+        registeredModelsCombo_->addItem(display, QString::fromStdString(m.id));
+        if (!selectId.empty() && m.id == selectId) {
+            selectIndex = static_cast<int>(i) + 1;
+        }
+    }
+    registeredModelsCombo_->setCurrentIndex(selectIndex);
+    registeredModelsCombo_->blockSignals(false);
+}
+
+void MainWindow::refreshScenarios() {
+    scenarioCombo_->blockSignals(true);
+    scenarioCombo_->clear();
+    scenarioCombo_->addItem("Random (default population)", "");
+    for (const auto& filename : bridge_->listScenarios()) {
+        scenarioCombo_->addItem(QString::fromStdString(filename), QString::fromStdString(filename));
+    }
+    scenarioCombo_->blockSignals(false);
+}
+
+void MainWindow::onRegisteredModelSelected(int index) {
+    QString id = registeredModelsCombo_->itemData(index).toString();
+    if (id.isEmpty()) return;
+
+    for (const auto& m : bridge_->listRegisteredModels()) {
+        if (QString::fromStdString(m.id) == id) {
+            modelPathEdit_->setText(QString::fromStdString(m.path));
+            int algoIdx = algoCombo_->findData(QString::fromStdString(m.algoClass));
+            if (algoIdx >= 0) algoCombo_->setCurrentIndex(algoIdx);
+            break;
+        }
+    }
+}
+
+void MainWindow::onScenarioSelected(int index) {
+    QString filename = scenarioCombo_->itemData(index).toString();
+    bridge_->setScenario(filename.toStdString());
+    onResetEpisode();
+}
+
+void MainWindow::onImportModel() {
+    QString sourcePath = QFileDialog::getOpenFileName(this, "Select model checkpoint to import", QString(), "SB3 checkpoint (*.zip)");
+    if (sourcePath.isEmpty()) return;
+
+    bool ok = false;
+    QString label = QInputDialog::getText(this, "Model label", "Display name for this model:", QLineEdit::Normal, QString(), &ok);
+    if (!ok || label.isEmpty()) return;
+
+    std::string algoClass = algoClassFromCombo();
+
+    try {
+        ModelEntry entry = bridge_->importModel(sourcePath.toStdString(), label.toStdString(), algoClass);
+        refreshRegisteredModels(entry.id);
+        log_->appendPlainText(QString("--- Imported model '%1' (%2) ---").arg(label).arg(QString::fromStdString(algoClass)));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Import failed", QString::fromStdString(e.what()));
+    }
+}
+
 void MainWindow::onBrowseModel() {
     QString path = QFileDialog::getOpenFileName(this, "Select model checkpoint", QString(), "SB3 checkpoint (*.zip)");
     if (!path.isEmpty()) {
@@ -119,7 +216,7 @@ void MainWindow::onBrowseModel() {
 void MainWindow::onLoadModel() {
     QString path = modelPathEdit_->text();
     if (path.isEmpty()) {
-        QMessageBox::warning(this, "No model selected", "Choose a checkpoint .zip file first.");
+        QMessageBox::warning(this, "No model selected", "Choose a checkpoint .zip file first (Browse, or pick from Registered).");
         return;
     }
 
@@ -136,6 +233,43 @@ void MainWindow::onLoadModel() {
         .arg(bridge_->isHybrid() ? "hybrid doctrine enabled" : "no doctrine"));
 
     onResetEpisode();
+}
+
+void MainWindow::onRunComparison() {
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    std::vector<ComparisonRow> rows;
+    try {
+        rows = bridge_->runComparison(seedSpin_->value());
+    } catch (const std::exception& e) {
+        QApplication::restoreOverrideCursor();
+        QMessageBox::critical(this, "Comparison failed", QString::fromStdString(e.what()));
+        return;
+    }
+    QApplication::restoreOverrideCursor();
+
+    auto* dialog = new QDialog(this);
+    dialog->setWindowTitle("Scheduler Comparison");
+    dialog->resize(720, 300);
+    auto* dlgLayout = new QVBoxLayout(dialog);
+
+    auto* table = new QTableWidget(static_cast<int>(rows.size()), 6, dialog);
+    table->setHorizontalHeaderLabels({"Scheduler", "Pd", "Pfa", "Avg intercept rate", "% correct", "Avg reward"});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const auto& r = rows[i];
+        table->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(r.label)));
+        table->setItem(i, 1, new QTableWidgetItem(QString::number(r.pd, 'f', 3)));
+        table->setItem(i, 2, new QTableWidgetItem(QString::number(r.pfa, 'f', 3)));
+        table->setItem(i, 3, new QTableWidgetItem(QString::number(r.avgInterceptRate, 'f', 3)));
+        table->setItem(i, 4, new QTableWidgetItem(QString::number(r.percentCorrect, 'f', 3)));
+        table->setItem(i, 5, new QTableWidgetItem(QString::number(r.avgReward, 'f', 2)));
+    }
+
+    dlgLayout->addWidget(table);
+    dialog->setLayout(dlgLayout);
+    dialog->show();
 }
 
 void MainWindow::onSpeedChanged(int value) {
@@ -180,7 +314,9 @@ void MainWindow::onResetEpisode() {
     spectrogram_->clearDwells();
     spectrogram_->setTruth(tm.numBands, tm.episodeLength, tm.data);
 
-    log_->appendPlainText(QString("--- Episode reset (seed=%1) ---").arg(seed));
+    QString scenarioLabel = bridge_->currentScenario().empty()
+        ? "random population" : QString::fromStdString(bridge_->currentScenario());
+    log_->appendPlainText(QString("--- Episode reset (seed=%1, scenario=%2) ---").arg(seed).arg(scenarioLabel));
     signalLabel_->setText("Signal: -");
     modeLabel_->setText(bridge_->hasModel()
         ? (bridge_->isHybrid() ? "Doctrine mode: -" : "Doctrine mode: n/a (non-hybrid model)")
