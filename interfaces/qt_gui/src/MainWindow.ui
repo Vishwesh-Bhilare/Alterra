@@ -535,7 +535,7 @@
            <bool>true</bool>
           </property>
           <property name="text">
-           <string>Runs the Adaptive (RL) scheduler and both Traditional baselines (Sequential, Balanced Random) on identical, reproducible episodes -- same seed, same emitter population as currently configured (Random Population or Custom Mix, whichever is selected) -- and compares their figures of merit side by side.</string>
+           <string>Runs the Adaptive (RL) scheduler(s) selected above, the Heuristic (rules-only) scheduler, and both Traditional baselines (Sequential, Balanced Random) on identical, reproducible episodes -- same seed, same emitter population as currently configured (Random Population, a preset scenario, or Custom Mix, whichever is selected) -- and compares their figures of merit side by side.</string>
           </property>
          </widget>
         </item>
@@ -576,6 +576,16 @@
             <widget class="QCheckBox" name="includeBalancedRandomCheck">
              <property name="text">
               <string>Include Traditional — Balanced Random</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="includeHeuristicCheck">
+             <property name="text">
+              <string>Include Heuristic (rules only)</string>
              </property>
              <property name="checked">
               <bool>true</bool>

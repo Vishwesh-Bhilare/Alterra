@@ -1,72 +1,62 @@
 #pragma once
 
 #include <QMainWindow>
-#include <QPlainTextEdit>
-#include <QPushButton>
-#include <QLabel>
-#include <QSpinBox>
-#include <QSlider>
-#include <QLineEdit>
-#include <QComboBox>
 #include <QTimer>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "PythonBridge.h"
-#include "SpectrogramWidget.h"
+#include "CustomMixDialog.h"
+#include "ui_MainWindow.h"
+
+QT_BEGIN_NAMESPACE
+namespace Ui { class MainWindow; }
+QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(const std::string& repoRoot, const std::string& configPath, QWidget* parent = nullptr);
+    ~MainWindow();
+
     void preloadModel(const std::string& modelPath, const std::string& algoClass);
 
 private Q_SLOTS:
     void onTick();
     void onStartStop();
+    void onStepOnce();
     void onResetEpisode();
     void onRandomSeed();
-    void onStepOnce();
     void onSpeedChanged(int value);
-    void onBrowseModel();
-    void onLoadModel();
-    void onImportModel();
-    void onRegisteredModelSelected(int index);
-    void onScenarioSelected(int index);
+    void onApplyConfig();
+    void onModeComboChanged(int index);
+    void onImportModel();              // shared by importModelButton + importModelButton2
+    void onRlModelComboChanged(int index);
+    void onScenarioMenuTriggered();    // preset scenario picked from scenarioButton's menu
+    void onCustomMixTriggered();       // "Custom Mix..." picked from the same menu
     void onRunComparison();
 
 private:
+    Ui::MainWindow* ui_;
     std::string repoRoot_;
     std::string configPath_;
 
     std::unique_ptr<PythonBridge> bridge_;
-    SpectrogramWidget* spectrogram_;
-    QPlainTextEdit* log_;
-    QLabel* metricsLabel_;
-    QLabel* signalLabel_;
-    QLabel* modeLabel_;
-    QPushButton* startStopButton_;
-    QPushButton* stepButton_;
-    QSpinBox* seedSpin_;
-    QSlider* speedSlider_;
-
-    QLineEdit* modelPathEdit_;
-    QComboBox* algoCombo_;
-    QPushButton* browseButton_;
-    QPushButton* loadModelButton_;
-    QPushButton* importModelButton_;
-    QComboBox* registeredModelsCombo_;
-
-    QComboBox* scenarioCombo_;
-    QPushButton* runComparisonButton_;
-
     QTimer* timer_;
     bool running_ = false;
     int prevT_ = 0;
+    int episodeCount_ = 0;
 
-    std::string algoClassFromCombo() const;
     void doStep();
     void updateMetricsLabel();
+    void updateDecisionStrip(const StepResult& r);
+    void appendEventRow(const StepResult& r);
+    void refreshPriorityTable();
+    void refreshDetectionsTable();
+    void updateStatsTab();
     void refreshRegisteredModels(const std::string& selectId = "");
-    void refreshScenarios();
+    void refreshScenarioMenu();
+    void applySchedulerModeFromCombo();
+    void resetEpisodeUiState();
 };

@@ -1,0 +1,301 @@
+# Alterra — GUI/Model Merge: Current State & Rewrite Plan
+
+Single reference document for the in-progress branch merge. Written from a
+file-by-file audit across multiple dev branches (batches sent and reviewed
+in chat, not yet all applied to disk). Supersedes nothing else in `docs/`
+— this covers only the merge/rewrite itself.
+
+**Goal restated precisely**: one GUI entry point that exposes every
+capability built so far — live single-episode playback, scenario
+selection (preset + custom-mix), model import/registry, and the
+multi-scheduler comparison — as tabs/pages of one running app, not
+separate ad-hoc builds.
+
+---
+
+## 1. Confirmed bugs (fix regardless of anything else)
+
+### 1.1 `simulation/environment/__init__.py` missing exports
+Current content only exports `BandOccupancy, SpectrumWorld, Detection,
+SensorModel, DwellResult, Receiver, AlterraEnv, PulseDescriptorWord,
+generate_episode_pdws, band_center_hz`.
+
+A separate, unused file `environment_init.py` has the same content **plus**:
+```python
+from .traditional_scanner import (
+    BALANCED_RANDOM, SEQUENTIAL, TraditionalScanDriver,
+    TraditionalScanner, run_traditional_scan,
+)
+```
+`interfaces/cli/cli_main.py` does `from simulation.environment import
+AlterraEnv, run_traditional_scan` — this **will raise `ImportError` as the
+tree currently stands**. `comparison.py`'s traditional job path and any
+GUI code driving `TraditionalScanDriver` directly need the same exports.
+
+**Fix**: replace `__init__.py`'s content with `environment_init.py`'s
+(shown above, merged), then delete `environment_init.py` so there's one
+file, not two.
+
+### 1.2 `pyproject.toml` entry point points at the stale CLI file
+```toml
+[project.scripts]
+alterra = "interfaces.cli.main:cli"
+```
+`interfaces/cli/main.py` is the **old** file — no `env compare` command,
+no `apply_overrides`/`run_traditional_scan` imports.
+`interfaces/cli/cli_main.py` is current (superset of `main.py` plus
+`compare`). The installed `alterra` command currently runs the stale one.
+
+**Fix**: pick one filename and make it so on disk + in `pyproject.toml`.
+Two options, functionally identical either way:
+- (a) Delete `main.py`, rename `cli_main.py` → `main.py`, keep
+  `pyproject.toml` as-is.
+- (b) Delete `main.py`, keep `cli_main.py`'s name, change
+  `pyproject.toml` to `interfaces.cli.cli_main:cli`.
+
+Not resolved in this doc — see open questions §6.
+
+---
+
+## 2. Python side: confirmed current, no action needed
+
+Every file below was checked line-for-line against what's on disk in the
+`hybrid-scheduler` branch and matches exactly — not stale, not
+superseded, nothing to reconcile:
+
+`simulation/emitters/{agile,base,fixed,periodic_scan}_emitter.py`,
+`emitter_factory.py`, `scenario_builder.py`, `schedule_utils.py`,
+`simulation/environment/{doctrine,comparison,scheduler_insight,
+sensor_model,spectrum_world,receiver,traditional_scanner,
+pdw_export,gym_env}.py`, `simulation/metrics/rollout_metrics.py`,
+`simulation/utils/{config_loader,rng}.py`, `simulation/viz/spectrogram_plot.py`,
+`model/agents/{heuristic_scheduler,evaluate,evaluate_hybrid,gui_comparison,
+inspect_policy,model_registry,policy_runner,train_hybrid,train_ppo}.py`,
+`model/deinterleaving/{dataset,losses,model,train}.py`,
+`pyproject.toml` (content correct, just the one entry-point line wrong —
+§1.2), `requirements.txt`.
+
+### 2.1 Notable capabilities already built but not yet GUI-wired
+These exist and work (used by CLI/eval scripts) but nothing in either
+GUI iteration calls them yet:
+- `AlterraEnv.band_priorities()` → `scheduler_insight.compute_band_priorities()`
+  — per-band priority score, visit/hit counts, confidence, threat level,
+  staleness. This is exactly what `MainWindow.ui`'s **Priority Map** tab
+  (`priorityTable`, 7 columns: Band/Freq/Priority/Visits/Hits/
+  Confidence/Threat) needs.
+- `AlterraEnv.recent_events(n)` / `recent_hits(n)` →
+  `SchedulerHistory` — per-decision history with `DecisionExplanation`
+  (explore/exploit label, reason, priority score), classification counts,
+  mean power. This is what the **events table** and **Recent Detections**
+  tab need.
+- `scheduler_insight.explain_decision()` → `DecisionExplanation` — this is
+  what `MainWindow.ui`'s decision strip (`currentBandLabel`,
+  `priorityScoreLabel`, `decisionValueLabel`, `reasonValueLabel`) needs.
+  `AlterraEnv.step()`'s `info` dict already carries `decision`,
+  `decision_reason`, `priority_score` — just needs to reach the GUI.
+- `apply_overrides()` (`config_loader.py`) — episode-length override,
+  fixed emitter count, traditional-scan mode/dwell overrides. This is
+  what `episodeLengthSpin`/`applyConfigButton` and
+  `traditionalDwellSpin` need.
+- `scenario_builder.build_custom_population()` + archetype catalog
+  (`fixed_low/medium/high`, `mid_episode_burst`, `silent_gap_revisit`,
+  `fast_hopper`, `periodic_scanner`, `"random"`) + `config_overrides`
+  support (`apply_scenario_overrides`, e.g. boosted `pfa_rate`) — no
+  confirmed GUI surface found yet. See open question §6.3.
+
+---
+
+## 3. GUI side: two incompatible iterations exist
+
+### 3.1 What I (Claude) built earlier in this thread
+Hand-constructed `MainWindow.h`/`.cpp` (plain `QVBoxLayout`s built in C++,
+no `.ui` file), a `PythonBridge` with: `loadModel`, `listRegisteredModels`,
+`importModel`, `listScenarios`, `setScenario`, `runComparison`, `reset`,
+`step`, `currentMetrics`, `truthMatrix`, `spectrumGeometry`. Flat single
+page: model row, scenario dropdown + Run Comparison button, playback
+controls, metrics label, signal label, doctrine-mode label, spectrogram,
+plain-text log. Comparison results shown in a popup `QDialog` with a
+`QTableWidget`.
+
+**This iteration is superseded.** It has no sidebar, no Priority
+Map/Detections/Stats tabs, no structured events table, no custom-mix
+scenario UI, no per-baseline include checkboxes, no separate Comparison
+*page* (it was a popup dialog instead).
+
+### 3.2 What `MainWindow.ui` actually specifies (authoritative)
+Qt Designer `.ui` file, loaded via `CMAKE_AUTOUIC` (already on in
+`CMakeLists.txt`, which also already links `Qt6::Charts`, unused so far).
+
+**Top-level layout**: `QListWidget` sidebar (`sidebarList`, items
+"Simulation"/"Comparison") + `QStackedWidget` (`stackedWidget`) with two
+pages.
+
+**Simulation page** (`simulationPage`), top to bottom:
+1. **Controls row**: `startStopButton`, `stepButton`, `resetButton`,
+   `seedLabel`+`seedSpin`, `randomSeedButton`, `scenarioButton` (a
+   `QToolButton` with `InstantPopup` — a menu, not a combo/dropdown),
+   `importModelButton`, `speedLabel`+`speedSlider`.
+2. **Config group** (`configGroup`, "Simulation Configuration (manual
+   overrides)"): a `modeForm` with `schedulerLabel`+`modeCombo`
+   (3 items: "Adaptive (RL model)", "Traditional — Sequential Sweep",
+   "Traditional — Balanced Random"), `traditionalDwellLabel`+
+   `traditionalDwellSpin`, `rlModelLabel`+`rlModelCombo`; a separate
+   `timingForm` with `episodeLengthLabel`+`episodeLengthSpin`; an
+   `applyConfigButton` ("Apply && Reset Episode").
+3. **Decision group** (`decisionGroup`, "Scheduler Decision"):
+   `currentBandLabel`, `priorityScoreLabel`, `decisionValueLabel` (bold),
+   `reasonValueLabel`.
+4. `metricsLabel`, `signalLabel`.
+5. `spectrogram` (the existing `SpectrogramWidget`, registered as a
+   Designer custom widget).
+6. `bottomSplitter` (horizontal): `eventsTable` (7 columns: Time, Band,
+   Frequency, Dwell, Signal, Result, Reward) on the left; `infoTabs`
+   (`QTabWidget`) on the right with 4 tabs:
+   - **Priority Map**: `priorityTable` (7 columns: Band, Freq, Priority,
+     Visits, Hits, Confidence, Threat)
+   - **Recent Detections**: `detectionsTable` (4 columns: Time, Band,
+     Freq, Signal)
+   - **Statistics**: `statsLabel` (word-wrap, top-aligned) + spacer
+   - **Log**: `log` (`QPlainTextEdit`, read-only, 500-block cap — the
+     one piece carried over unchanged from the old iteration)
+
+**Comparison page** (`comparisonPage`), top to bottom:
+1. `comparisonDescriptionLabel` — states explicitly: "Runs the Adaptive
+   (RL) scheduler and both Traditional baselines... on identical,
+   reproducible episodes... and compares their figures of merit side by
+   side."
+2. **Models and Baselines group** (`modelsGroup`): `modelsListWidget`
+   (a `QListWidget`, height-capped at 140px — implies checkable items for
+   multi-select, not single-select), `importModelButton2` (a **second**
+   Import Model button, independent of the Simulation page's), 
+   `includeSequentialCheck` (checked by default), 
+   `includeBalancedRandomCheck` (checked by default).
+3. **Comparison controls row**: `comparisonSeedLabel`+`comparisonSeedSpin`,
+   `runComparisonButton`, `comparisonStatusLabel` (empty by default — a
+   status/progress message target).
+4. `comparisonTable` (6 columns: Scheduler, Pd, Pfa, Intercept Rate, Avg
+   Reward, % Correct) — **inline on the page, not a popup dialog** like
+   the old iteration.
+
+### 3.3 Design implications this creates (not yet in any code)
+
+- **"Scheduler mode" is now an explicit, separate concept from "which
+  model is loaded."** `modeCombo` lets the user pick Traditional
+  scheduling with *no* RL model involved at all — the old
+  `PythonBridge`'s "no model loaded → step randomly" fallback is wrong
+  for this UI; it needs a real three-way branch: Adaptive (drive via
+  `PolicyRunner`, `rlModelCombo`'s selection) / Traditional-Sequential /
+  Traditional-BalancedRandom (drive via `TraditionalScanDriver`,
+  `traditionalDwellSpin`'s value, ignoring `rlModelCombo` entirely).
+- **`PythonBridge::step()` needs to additionally surface `decision`,
+  `decision_reason`, `priority_score`** (already in `info` dict from
+  `AlterraEnv.step()`) for the decision strip — old `StepResult` doesn't
+  carry these.
+- **`eventsTable` is structured (7 typed columns), not a text log** — a
+  different code path from the old `appendPlainText` pattern; the `log`
+  tab keeps the old text-log behavior in parallel for raw/debug view.
+- **`priorityTable` needs periodic refresh** from
+  `AlterraEnv.band_priorities()` — not currently called anywhere in
+  either GUI iteration.
+- **`detectionsTable` needs `AlterraEnv.recent_hits()`** wired in —
+  same, not currently called.
+- **Comparison page's job selection is now explicit and partial**, not
+  "run everything registered" like `gui_comparison.run_full_comparison()`
+  currently does unconditionally. `modelsListWidget` (which registered
+  models to include, multi-select) and the two baseline checkboxes need
+  to become parameters to a modified `run_full_comparison`, replacing its
+  current hardcoded "Traditional(sequential) + Heuristic + every
+  registered model" job list.
+- **`comparisonStatusLabel`** implies the comparison run should report
+  progress ("Running Hybrid v2... 3/5") rather than the old
+  fire-and-block-then-show-dialog pattern — at minimum needs a "Running…"
+  state set before the (still-synchronous, per the old design's
+  documented tradeoff) call, cleared after.
+- **Two separate Import Model buttons** (`importModelButton` on
+  Simulation, `importModelButton2` on Comparison) need to hit the same
+  underlying `PythonBridge::importModel` + refresh **both**
+  `rlModelCombo` and `modelsListWidget` afterward, not just one.
+- **No Heuristic checkbox exists anywhere in this `.ui`** — the
+  `comparisonDescriptionLabel`'s own text only mentions "the Adaptive
+  (RL) scheduler and both Traditional baselines." This is either an
+  intentional scope change (heuristic dropped from the Comparison page
+  entirely) or a still-missing checkbox. See open question §6.2.
+
+---
+
+## 4. Rewrite task list (once open questions in §6 are answered)
+
+In dependency order:
+
+1. Fix `simulation/environment/__init__.py` (§1.1), delete
+   `environment_init.py`.
+2. Resolve the CLI entry-point/filename question (§1.2, §6.1).
+3. Extend `StepResult` (`PythonBridge.h`) with `decision`, `decisionReason`,
+   `priorityScore` fields; populate in `PythonBridge::step()` from
+   `info[...]`.
+4. Add `PythonBridge` methods: `bandPriorities()` (wraps
+   `AlterraEnv.band_priorities()`), `recentHits(n)` (wraps
+   `AlterraEnv.recent_hits()`) — both returning plain structs for
+   `priorityTable`/`detectionsTable`.
+5. Add a scheduler-mode concept to `PythonBridge` (`AdaptiveRL` /
+   `TraditionalSequential` / `TraditionalBalancedRandom`), replacing the
+   old "hasModel() → random fallback" logic; `step()` branches on it,
+   using `TraditionalScanDriver` for the two traditional modes.
+6. Rewrite `gui_comparison.run_full_comparison()` to accept explicit
+   job selection (list of model ids to include, plus
+   include_sequential/include_balanced_random bools) instead of always
+   running everything registered.
+7. Full `MainWindow.h`/`.cpp` rewrite against `MainWindow.ui`'s actual
+   `objectName`s (loaded via `ui_MainWindow.h`'s generated `Ui::MainWindow`
+   struct, per `CMAKE_AUTOUIC`) — wire every widget listed in §3.2 to
+   the `PythonBridge` methods above.
+8. Wire `scenarioButton`'s popup menu: preset scenarios
+   (`configs/scenarios/*.yaml`, as before) plus — pending §6.3 — a
+   Custom Mix entry.
+9. `importModelButton`/`importModelButton2` both call the same import
+   flow, refresh both `rlModelCombo` and `modelsListWidget`.
+
+---
+
+## 5. What is explicitly NOT changing
+
+- `SpectrogramWidget` (rendering logic, `DwellOutcome` enum,
+  frequency-axis geometry) — reused as-is, already a registered Designer
+  custom widget in the `.ui`.
+- The simulation stack (`simulation/`), reward function, doctrine logic,
+  emitter models, sensor model — none of this is touched by the GUI
+  rewrite.
+- Model training scripts (`train_ppo.py`, `train_hybrid.py`,
+  `model/deinterleaving/*`) — untouched.
+- `model_registry.py`/`policy_runner.py` — untouched; the GUI rewrite
+  only changes *what calls* these, not their own interfaces.
+
+---
+
+## 6. Open questions — need an answer before the rewrite starts
+
+### 6.1 CLI filename
+Delete `interfaces/cli/main.py` and keep `cli_main.py`'s name (update
+`pyproject.toml`), or the reverse (rename `cli_main.py` → `main.py`,
+delete the old `main.py` first)? Either is a 2-minute fix, purely your
+preference on which name is canonical going forward.
+
+### 6.2 Heuristic scheduler on the Comparison page
+`MainWindow.ui`'s own description label only mentions Adaptive RL +
+both Traditional baselines — no Heuristic checkbox exists in the file as
+sent. Is this:
+(a) an intentional scope decision (Heuristic dropped from the GUI
+comparison, still usable via CLI/`comparison.py` directly), or
+(b) a checkbox that still needs adding to the `.ui` (and the description
+label's wording updated to match)?
+
+### 6.3 Custom Mix scenario UI
+`scenario_builder.py` has a fully-built `build_custom_population()` +
+archetype catalog + per-emitter band-range placement + `boost_false_alarm`
+override — but nothing in `MainWindow.ui` as sent exposes it (only
+`scenarioButton`'s popup menu, presumably listing the static
+`configs/scenarios/*.yaml` presets). Does a Custom Mix composer dialog
+already exist in a file not yet sent, or does this rewrite need to design
+and build one from scratch (e.g. a dialog with an "Add Emitter"
+button → archetype dropdown + band-range spinboxes per row, "Boost False
+Alarm Rate" checkbox, feeding `build_custom_population`)?

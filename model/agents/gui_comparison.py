@@ -64,3 +64,62 @@ def run_full_comparison(repo_root: str, config, seed: int, scenario_filename: st
         }
         for r in rows
     ]
+
+
+def run_selected_comparison(
+    repo_root: str,
+    config,
+    seed: int,
+    scenario_filename: str | None,
+    model_ids: list[str],
+    include_sequential: bool,
+    include_balanced_random: bool,
+    include_heuristic: bool,
+) -> list[dict]:
+    """Comparison page's actual entry point -- explicit job selection
+    (which registered models, which baselines) instead of
+    run_full_comparison's old "everything registered" default. Kept
+    separate from run_full_comparison rather than replacing it, since the
+    CLI's `alterra env compare` and other non-GUI callers may still want
+    the simpler always-everything behavior."""
+    from simulation.environment.comparison import run_comparison as _run_comparison
+
+    def fresh_emitters():
+        if not scenario_filename:
+            return None
+        return build_scenario_emitters(config, repo_root, scenario_filename)
+
+    jobs = []
+    if include_sequential:
+        jobs.append({"label": "Traditional (sequential)", "kind": "traditional", "mode": "sequential", "manual_emitters": fresh_emitters()})
+    if include_balanced_random:
+        jobs.append({"label": "Traditional (balanced random)", "kind": "traditional", "mode": "balanced_random", "manual_emitters": fresh_emitters()})
+    if include_heuristic:
+        jobs.append({"label": "Heuristic (rules only)", "kind": "heuristic", "manual_emitters": fresh_emitters()})
+
+    all_models = {m["id"]: m for m in model_registry.list_models(repo_root)}
+    for model_id in model_ids:
+        entry = all_models.get(model_id)
+        if entry is None:
+            continue
+        runner = policy_runner.load_model(repo_root, model_id)
+        jobs.append({
+            "label": entry["label"],
+            "kind": "rl",
+            "runner": runner,
+            "manual_emitters": fresh_emitters(),
+            "hybrid": entry["algo_class"] == "MaskablePPO",
+        })
+
+    rows = _run_comparison(config, seed, jobs)
+    return [
+        {
+            "label": r.label,
+            "pd": r.metrics.probability_of_detection,
+            "pfa": r.metrics.probability_of_false_alarm,
+            "avg_intercept_rate": r.metrics.avg_intercept_rate,
+            "percent_correct": r.metrics.percent_correct,
+            "avg_reward": r.metrics.avg_reward,
+        }
+        for r in rows
+    ]

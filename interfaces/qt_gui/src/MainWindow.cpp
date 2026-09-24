@@ -1,314 +1,265 @@
 #include "MainWindow.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QWidget>
-#include <QString>
-#include <QRandomGenerator>
+#include <QMenu>
+#include <QAction>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QMessageBox>
-#include <QDialog>
-#include <QDialogButtonBox>
-#include <QFileInfo>
-#include <QFormLayout>
-#include <QTableWidget>
-#include <QHeaderView>
+#include <QRandomGenerator>
 #include <QApplication>
+#include <QTableWidgetItem>
+#include <QHeaderView>
+#include <QListWidgetItem>
+
+namespace {
+
+QColor outcomeQColor(DwellOutcome o) {
+    switch (o) {
+        case DwellOutcome::Hit:          return QColor(60, 220, 100);
+        case DwellOutcome::Miss:         return QColor(255, 175, 0);
+        case DwellOutcome::FalseAlarm:   return QColor(255, 60, 60);
+        case DwellOutcome::CorrectReject:
+        default:                        return QColor(150, 150, 160);
+    }
+}
+
+QString outcomeLabel(DwellOutcome o) {
+    switch (o) {
+        case DwellOutcome::Hit:          return "Hit";
+        case DwellOutcome::Miss:         return "Miss";
+        case DwellOutcome::FalseAlarm:   return "False Alarm";
+        case DwellOutcome::CorrectReject:
+        default:                        return "Correct Reject";
+    }
+}
+
+QString formatFreq(double hz) {
+    if (hz >= 1e9) return QString::number(hz / 1e9, 'f', 3) + " GHz";
+    return QString::number(hz / 1e6, 'f', 1) + " MHz";
+}
+
+}  // namespace
 
 MainWindow::MainWindow(const std::string& repoRoot, const std::string& configPath, QWidget* parent)
-    : QMainWindow(parent), repoRoot_(repoRoot), configPath_(configPath) {
+    : QMainWindow(parent), ui_(new Ui::MainWindow), repoRoot_(repoRoot), configPath_(configPath) {
+    ui_->setupUi(this);
+
     bridge_ = std::make_unique<PythonBridge>(repoRoot, configPath);
 
-    auto* central = new QWidget(this);
-    auto* layout = new QVBoxLayout(central);
+    ui_->sidebarList->setCurrentRow(0);
+    connect(ui_->sidebarList, &QListWidget::currentRowChanged, ui_->stackedWidget, &QStackedWidget::setCurrentIndex);
 
-    // --- Model row ---
-    auto* modelRow = new QWidget(central);
-    auto* modelRowLayout = new QHBoxLayout(modelRow);
-    modelRowLayout->addWidget(new QLabel("Model:", modelRow));
-    modelPathEdit_ = new QLineEdit(modelRow);
-    modelPathEdit_->setPlaceholderText("path to checkpoint .zip");
-    browseButton_ = new QPushButton("Browse...", modelRow);
-    algoCombo_ = new QComboBox(modelRow);
-    algoCombo_->addItem("PPO", "PPO");
-    algoCombo_->addItem("RecurrentPPO", "RecurrentPPO");
-    algoCombo_->addItem("Hybrid (MaskablePPO)", "MaskablePPO");
-    loadModelButton_ = new QPushButton("Load Model", modelRow);
-    importModelButton_ = new QPushButton("Import Model...", modelRow);
-    registeredModelsCombo_ = new QComboBox(modelRow);
-    registeredModelsCombo_->setMinimumWidth(180);
+    ui_->eventsTable->horizontalHeader()->setStretchLastSection(true);
+    ui_->priorityTable->horizontalHeader()->setStretchLastSection(true);
+    ui_->detectionsTable->horizontalHeader()->setStretchLastSection(true);
+    ui_->comparisonTable->horizontalHeader()->setStretchLastSection(true);
 
-    modelRowLayout->addWidget(modelPathEdit_, 1);
-    modelRowLayout->addWidget(browseButton_);
-    modelRowLayout->addWidget(algoCombo_);
-    modelRowLayout->addWidget(loadModelButton_);
-    modelRowLayout->addWidget(importModelButton_);
-    modelRowLayout->addWidget(new QLabel("Registered:", modelRow));
-    modelRowLayout->addWidget(registeredModelsCombo_);
-    layout->addWidget(modelRow);
+    // scenarioButton's popup menu: built/rebuilt from disk each refresh.
+    auto* scenarioMenu = new QMenu(this);
+    ui_->scenarioButton->setMenu(scenarioMenu);
 
-    // --- Scenario + comparison row ---
-    auto* scenarioRow = new QWidget(central);
-    auto* scenarioRowLayout = new QHBoxLayout(scenarioRow);
-    scenarioRowLayout->addWidget(new QLabel("Scenario:", scenarioRow));
-    scenarioCombo_ = new QComboBox(scenarioRow);
-    scenarioCombo_->setMinimumWidth(220);
-    scenarioRowLayout->addWidget(scenarioCombo_);
-    runComparisonButton_ = new QPushButton("Run Comparison", scenarioRow);
-    scenarioRowLayout->addWidget(runComparisonButton_);
-    scenarioRowLayout->addStretch(1);
-    layout->addWidget(scenarioRow);
-
-    // --- Playback controls row ---
-    auto* controls = new QWidget(central);
-    auto* controlsLayout = new QHBoxLayout(controls);
-    startStopButton_ = new QPushButton("Start", controls);
-    stepButton_ = new QPushButton("Step", controls);
-    auto* resetButton = new QPushButton("Reset Episode", controls);
-    auto* randomSeedButton = new QPushButton("Random Seed", controls);
-    auto* seedLabel = new QLabel("Seed:", controls);
-    seedSpin_ = new QSpinBox(controls);
-    seedSpin_->setRange(0, 1000000);
-    seedSpin_->setValue(0);
-    auto* speedLabel = new QLabel("Speed:", controls);
-    speedSlider_ = new QSlider(Qt::Horizontal, controls);
-    speedSlider_->setRange(10, 300);
-    speedSlider_->setValue(60);
-    speedSlider_->setFixedWidth(120);
-    speedSlider_->setInvertedAppearance(true);
-
-    controlsLayout->addWidget(startStopButton_);
-    controlsLayout->addWidget(stepButton_);
-    controlsLayout->addWidget(resetButton);
-    controlsLayout->addWidget(seedLabel);
-    controlsLayout->addWidget(seedSpin_);
-    controlsLayout->addWidget(randomSeedButton);
-    controlsLayout->addWidget(speedLabel);
-    controlsLayout->addWidget(speedSlider_);
-    layout->addWidget(controls);
-
-    metricsLabel_ = new QLabel("Pd: -   Pfa: -   Intercept rate: -   Avg reward: -", central);
-    layout->addWidget(metricsLabel_);
-    signalLabel_ = new QLabel("Signal: -", central);
-    layout->addWidget(signalLabel_);
-    modeLabel_ = new QLabel("Doctrine mode: n/a (no model loaded — stepping randomly)", central);
-    layout->addWidget(modeLabel_);
-
-    spectrogram_ = new SpectrogramWidget(central);
-    layout->addWidget(spectrogram_, 1);
-
-    log_ = new QPlainTextEdit(central);
-    log_->setReadOnly(true);
-    log_->setMaximumBlockCount(500);
-    layout->addWidget(log_, 1);
-
-    setCentralWidget(central);
-    resize(1100, 820);
-    setWindowTitle("Alterra — CORTEX Smart Scan Scheduler");
-
-    connect(startStopButton_, &QPushButton::clicked, this, &MainWindow::onStartStop);
-    connect(stepButton_, &QPushButton::clicked, this, &MainWindow::onStepOnce);
-    connect(resetButton, &QPushButton::clicked, this, &MainWindow::onResetEpisode);
-    connect(randomSeedButton, &QPushButton::clicked, this, &MainWindow::onRandomSeed);
-    connect(speedSlider_, &QSlider::valueChanged, this, &MainWindow::onSpeedChanged);
-    connect(browseButton_, &QPushButton::clicked, this, &MainWindow::onBrowseModel);
-    connect(loadModelButton_, &QPushButton::clicked, this, &MainWindow::onLoadModel);
-    connect(importModelButton_, &QPushButton::clicked, this, &MainWindow::onImportModel);
-    connect(registeredModelsCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MainWindow::onRegisteredModelSelected);
-    connect(scenarioCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MainWindow::onScenarioSelected);
-    connect(runComparisonButton_, &QPushButton::clicked, this, &MainWindow::onRunComparison);
+    connect(ui_->startStopButton, &QPushButton::clicked, this, &MainWindow::onStartStop);
+    connect(ui_->stepButton, &QPushButton::clicked, this, &MainWindow::onStepOnce);
+    connect(ui_->resetButton, &QPushButton::clicked, this, &MainWindow::onResetEpisode);
+    connect(ui_->randomSeedButton, &QPushButton::clicked, this, &MainWindow::onRandomSeed);
+    connect(ui_->speedSlider, &QSlider::valueChanged, this, &MainWindow::onSpeedChanged);
+    connect(ui_->applyConfigButton, &QPushButton::clicked, this, &MainWindow::onApplyConfig);
+    connect(ui_->modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onModeComboChanged);
+    connect(ui_->rlModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onRlModelComboChanged);
+    connect(ui_->importModelButton, &QPushButton::clicked, this, &MainWindow::onImportModel);
+    connect(ui_->importModelButton2, &QPushButton::clicked, this, &MainWindow::onImportModel);
+    connect(ui_->runComparisonButton, &QPushButton::clicked, this, &MainWindow::onRunComparison);
 
     timer_ = new QTimer(this);
     connect(timer_, &QTimer::timeout, this, &MainWindow::onTick);
-    timer_->setInterval(speedSlider_->value());
+    timer_->setInterval(ui_->speedSlider->value());
 
     refreshRegisteredModels();
-    refreshScenarios();
+    refreshScenarioMenu();
+    applySchedulerModeFromCombo();
     onResetEpisode();
 }
 
-void MainWindow::preloadModel(const std::string& modelPath, const std::string& algoClass) {
-    modelPathEdit_->setText(QString::fromStdString(modelPath));
-    int idx = algoCombo_->findData(QString::fromStdString(algoClass));
-    if (idx >= 0) algoCombo_->setCurrentIndex(idx);
-    onLoadModel();
+MainWindow::~MainWindow() {
+    delete ui_;
 }
 
-std::string MainWindow::algoClassFromCombo() const {
-    return algoCombo_->currentData().toString().toStdString();
+void MainWindow::preloadModel(const std::string& modelPath, const std::string& algoClass) {
+    try {
+        ModelEntry entry = bridge_->importModel(modelPath, "Preloaded Model", algoClass);
+        refreshRegisteredModels(entry.id);
+        int idx = ui_->rlModelCombo->findData(QString::fromStdString(entry.id));
+        if (idx >= 0) ui_->rlModelCombo->setCurrentIndex(idx);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Failed to preload model", QString::fromStdString(e.what()));
+    }
 }
+
+// ---------------------------------------------------------------------
+// Registered models (feeds rlModelCombo on Simulation page AND
+// modelsListWidget on Comparison page -- both refreshed together)
+// ---------------------------------------------------------------------
 
 void MainWindow::refreshRegisteredModels(const std::string& selectId) {
-    registeredModelsCombo_->blockSignals(true);
-    registeredModelsCombo_->clear();
-    registeredModelsCombo_->addItem("(none selected)", "");
+    ui_->rlModelCombo->blockSignals(true);
+    ui_->rlModelCombo->clear();
+    ui_->rlModelCombo->addItem("(none)", "");
 
     auto models = bridge_->listRegisteredModels();
+
     int selectIndex = 0;
     for (size_t i = 0; i < models.size(); ++i) {
         const auto& m = models[i];
         QString display = QString("%1  [%2]").arg(QString::fromStdString(m.label)).arg(QString::fromStdString(m.algoClass));
-        registeredModelsCombo_->addItem(display, QString::fromStdString(m.id));
-        if (!selectId.empty() && m.id == selectId) {
-            selectIndex = static_cast<int>(i) + 1;
-        }
+        ui_->rlModelCombo->addItem(display, QString::fromStdString(m.id));
+        if (!selectId.empty() && m.id == selectId) selectIndex = static_cast<int>(i) + 1;
     }
-    registeredModelsCombo_->setCurrentIndex(selectIndex);
-    registeredModelsCombo_->blockSignals(false);
-}
+    ui_->rlModelCombo->setCurrentIndex(selectIndex);
+    ui_->rlModelCombo->blockSignals(false);
 
-void MainWindow::refreshScenarios() {
-    scenarioCombo_->blockSignals(true);
-    scenarioCombo_->clear();
-    scenarioCombo_->addItem("Random (default population)", "");
-    for (const auto& filename : bridge_->listScenarios()) {
-        scenarioCombo_->addItem(QString::fromStdString(filename), QString::fromStdString(filename));
+    // Comparison page's multi-select list -- checkable items.
+    ui_->modelsListWidget->clear();
+    for (const auto& m : models) {
+        QString display = QString("%1  [%2]").arg(QString::fromStdString(m.label)).arg(QString::fromStdString(m.algoClass));
+        auto* item = new QListWidgetItem(display, ui_->modelsListWidget);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        item->setData(Qt::UserRole, QString::fromStdString(m.id));
     }
-    scenarioCombo_->blockSignals(false);
-}
-
-void MainWindow::onRegisteredModelSelected(int index) {
-    QString id = registeredModelsCombo_->itemData(index).toString();
-    if (id.isEmpty()) return;
-
-    for (const auto& m : bridge_->listRegisteredModels()) {
-        if (QString::fromStdString(m.id) == id) {
-            modelPathEdit_->setText(QString::fromStdString(m.path));
-            int algoIdx = algoCombo_->findData(QString::fromStdString(m.algoClass));
-            if (algoIdx >= 0) algoCombo_->setCurrentIndex(algoIdx);
-            break;
-        }
-    }
-}
-
-void MainWindow::onScenarioSelected(int index) {
-    QString filename = scenarioCombo_->itemData(index).toString();
-    bridge_->setScenario(filename.toStdString());
-    onResetEpisode();
 }
 
 void MainWindow::onImportModel() {
     QString sourcePath = QFileDialog::getOpenFileName(this, "Select model checkpoint to import", QString(), "SB3 checkpoint (*.zip)");
     if (sourcePath.isEmpty()) return;
 
-    // The checkpoint type is part of the model's runtime contract.  In
-    // particular, a hybrid checkpoint must be loaded as MaskablePPO so the
-    // bridge enables doctrine mode and supplies action masks on every step.
-    // Do not infer this from the main model row: that control often still
-    // contains its default PPO value when a user launches the GUI normally.
-    QDialog dialog(this);
-    dialog.setWindowTitle("Import Model");
-    auto* layout = new QVBoxLayout(&dialog);
-    auto* form = new QFormLayout;
-    auto* labelEdit = new QLineEdit(QFileInfo(sourcePath).completeBaseName(), &dialog);
-    auto* algorithmCombo = new QComboBox(&dialog);
-    algorithmCombo->addItem("PPO", "PPO");
-    algorithmCombo->addItem("RecurrentPPO", "RecurrentPPO");
-    algorithmCombo->addItem("Hybrid (MaskablePPO)", "MaskablePPO");
-    const int currentAlgorithm = algorithmCombo->findData(algoCombo_->currentData());
-    if (currentAlgorithm >= 0) algorithmCombo->setCurrentIndex(currentAlgorithm);
-    form->addRow("Display name:", labelEdit);
-    form->addRow("Algorithm:", algorithmCombo);
-    layout->addLayout(form);
+    bool ok = false;
+    QString label = QInputDialog::getText(this, "Model label", "Display name for this model:", QLineEdit::Normal, QString(), &ok);
+    if (!ok || label.isEmpty()) return;
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() != QDialog::Accepted) return;
-
-    const QString label = labelEdit->text().trimmed();
-    if (label.isEmpty()) {
-        QMessageBox::warning(this, "Import cancelled", "A display name is required.");
-        return;
-    }
-    const std::string algoClass = algorithmCombo->currentData().toString().toStdString();
+    bool algoOk = false;
+    QStringList algoOptions = {"PPO", "RecurrentPPO", "MaskablePPO (Hybrid)"};
+    QString algoChoice = QInputDialog::getItem(this, "Algorithm type", "Which SB3 algorithm trained this checkpoint?", algoOptions, 0, false, &algoOk);
+    if (!algoOk) return;
+    std::string algoClass = algoChoice.startsWith("MaskablePPO") ? "MaskablePPO" : algoChoice.toStdString();
 
     try {
         ModelEntry entry = bridge_->importModel(sourcePath.toStdString(), label.toStdString(), algoClass);
         refreshRegisteredModels(entry.id);
-        // Importing is the normal-launch equivalent of passing a checkpoint
-        // and algorithm on the command line: activate the imported model
-        // immediately rather than leaving the simulation to step randomly.
-        modelPathEdit_->setText(QString::fromStdString(entry.path));
-        const int algorithmIndex = algoCombo_->findData(QString::fromStdString(entry.algoClass));
-        if (algorithmIndex >= 0) algoCombo_->setCurrentIndex(algorithmIndex);
-        bridge_->loadModel(entry.path, entry.algoClass);
-        onResetEpisode();
-        log_->appendPlainText(QString("--- Imported and loaded model '%1' (%2) ---")
-            .arg(label).arg(QString::fromStdString(algoClass)));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, "Import failed", QString::fromStdString(e.what()));
     }
 }
 
-void MainWindow::onBrowseModel() {
-    QString path = QFileDialog::getOpenFileName(this, "Select model checkpoint", QString(), "SB3 checkpoint (*.zip)");
-    if (!path.isEmpty()) {
-        modelPathEdit_->setText(path);
+void MainWindow::onRlModelComboChanged(int index) {
+    QString modelId = ui_->rlModelCombo->itemData(index).toString();
+    if (modelId.isEmpty()) return;
+
+    for (const auto& m : bridge_->listRegisteredModels()) {
+        if (QString::fromStdString(m.id) == modelId) {
+            try {
+                bridge_->loadModel(m.path, m.algoClass);
+            } catch (const std::exception& e) {
+                QMessageBox::critical(this, "Failed to load model", QString::fromStdString(e.what()));
+            }
+            break;
+        }
     }
 }
 
-void MainWindow::onLoadModel() {
-    QString path = modelPathEdit_->text();
-    if (path.isEmpty()) {
-        QMessageBox::warning(this, "No model selected", "Choose a checkpoint .zip file first (Browse, or pick from Registered).");
-        return;
+// ---------------------------------------------------------------------
+// Scheduler mode / config
+// ---------------------------------------------------------------------
+
+void MainWindow::applySchedulerModeFromCombo() {
+    switch (ui_->modeCombo->currentIndex()) {
+        case 1: bridge_->setSchedulerMode(SchedulerMode::TraditionalSequential); break;
+        case 2: bridge_->setSchedulerMode(SchedulerMode::TraditionalBalancedRandom); break;
+        default: bridge_->setSchedulerMode(SchedulerMode::AdaptiveRL); break;
     }
+    bool traditional = ui_->modeCombo->currentIndex() != 0;
+    ui_->traditionalDwellSpin->setEnabled(traditional);
+    ui_->rlModelCombo->setEnabled(!traditional);
+}
 
-    std::string algoClass = algoClassFromCombo();
-    try {
-        bridge_->loadModel(path.toStdString(), algoClass);
-    } catch (const std::exception& e) {
-        QMessageBox::critical(this, "Failed to load model", QString::fromStdString(e.what()));
-        return;
-    }
+void MainWindow::onModeComboChanged(int) {
+    applySchedulerModeFromCombo();
+}
 
-    log_->appendPlainText(QString("--- Loaded %1 model (%2) ---")
-        .arg(QString::fromStdString(algoClass))
-        .arg(bridge_->isHybrid() ? "hybrid doctrine enabled" : "no doctrine"));
-
+void MainWindow::onApplyConfig() {
+    bridge_->setTraditionalDwellSlots(ui_->traditionalDwellSpin->value());
+    bridge_->setEpisodeLengthOverride(ui_->episodeLengthSpin->value());
+    applySchedulerModeFromCombo();
     onResetEpisode();
 }
 
-void MainWindow::onRunComparison() {
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    std::vector<ComparisonRow> rows;
-    try {
-        rows = bridge_->runComparison(seedSpin_->value());
-    } catch (const std::exception& e) {
-        QApplication::restoreOverrideCursor();
-        QMessageBox::critical(this, "Comparison failed", QString::fromStdString(e.what()));
+// ---------------------------------------------------------------------
+// Scenario menu (presets + Custom Mix, wired properly in Module 6)
+// ---------------------------------------------------------------------
+
+void MainWindow::refreshScenarioMenu() {
+    QMenu* menu = ui_->scenarioButton->menu();
+    menu->clear();
+
+    QAction* randomAction = menu->addAction("Random Population");
+    connect(randomAction, &QAction::triggered, this, [this]() {
+        bridge_->setScenario("");
+        ui_->scenarioButton->setText("Scenario: Random Population");
+        onResetEpisode();
+    });
+
+    menu->addSeparator();
+    for (const auto& filename : bridge_->listScenarios()) {
+        QAction* action = menu->addAction(QString::fromStdString(filename));
+        connect(action, &QAction::triggered, this, [this, filename]() {
+            bridge_->setScenario(filename);
+            ui_->scenarioButton->setText(QString("Scenario: %1").arg(QString::fromStdString(filename)));
+            onResetEpisode();
+        });
+    }
+
+    menu->addSeparator();
+    QAction* customMixAction = menu->addAction("Custom Mix...");
+    connect(customMixAction, &QAction::triggered, this, &MainWindow::onCustomMixTriggered);
+}
+
+void MainWindow::onScenarioMenuTriggered() {
+    // Individual preset/random actions are wired inline in
+    // refreshScenarioMenu() via lambdas -- this slot is reserved for
+    // Module 6's Custom Mix dialog integration.
+}
+
+void MainWindow::onCustomMixTriggered() {
+    auto archetypes = bridge_->archetypeNames();
+    SpectrumGeometry geom = bridge_->spectrumGeometry();
+
+    CustomMixDialog dialog(archetypes, geom.numBands, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    auto requests = dialog.requests();
+    if (requests.empty()) {
+        QMessageBox::warning(this, "Custom Mix", "Add at least one emitter before applying.");
         return;
     }
-    QApplication::restoreOverrideCursor();
 
-    auto* dialog = new QDialog(this);
-    dialog->setWindowTitle("Scheduler Comparison");
-    dialog->resize(720, 300);
-    auto* dlgLayout = new QVBoxLayout(dialog);
-
-    auto* table = new QTableWidget(static_cast<int>(rows.size()), 6, dialog);
-    table->setHorizontalHeaderLabels({"Scheduler", "Pd", "Pfa", "Avg intercept rate", "% correct", "Avg reward"});
-    table->horizontalHeader()->setStretchLastSection(true);
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-        const auto& r = rows[i];
-        table->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(r.label)));
-        table->setItem(i, 1, new QTableWidgetItem(QString::number(r.pd, 'f', 3)));
-        table->setItem(i, 2, new QTableWidgetItem(QString::number(r.pfa, 'f', 3)));
-        table->setItem(i, 3, new QTableWidgetItem(QString::number(r.avgInterceptRate, 'f', 3)));
-        table->setItem(i, 4, new QTableWidgetItem(QString::number(r.percentCorrect, 'f', 3)));
-        table->setItem(i, 5, new QTableWidgetItem(QString::number(r.avgReward, 'f', 2)));
+    std::vector<std::pair<std::string, std::pair<int, int>>> bridgeRequests;
+    for (const auto& r : requests) {
+        bridgeRequests.push_back({r.archetype, {r.bandLo, r.bandHi}});
     }
 
-    dlgLayout->addWidget(table);
-    dialog->setLayout(dlgLayout);
-    dialog->show();
+    try {
+        bridge_->buildCustomScenario(bridgeRequests, dialog.boostFalseAlarm());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Custom Mix failed", QString::fromStdString(e.what()));
+        return;
+    }
+
+    ui_->scenarioButton->setText(QString("Scenario: Custom Mix (%1 emitters)").arg(requests.size()));
+    onResetEpisode();
 }
+
+// ---------------------------------------------------------------------
+// Playback
+// ---------------------------------------------------------------------
 
 void MainWindow::onSpeedChanged(int value) {
     timer_->setInterval(value);
@@ -316,13 +267,9 @@ void MainWindow::onSpeedChanged(int value) {
 
 void MainWindow::onStartStop() {
     running_ = !running_;
-    startStopButton_->setText(running_ ? "Pause" : "Start");
-    stepButton_->setEnabled(!running_);
-    if (running_) {
-        timer_->start();
-    } else {
-        timer_->stop();
-    }
+    ui_->startStopButton->setText(running_ ? "Pause" : "Start");
+    ui_->stepButton->setEnabled(!running_);
+    if (running_) timer_->start(); else timer_->stop();
 }
 
 void MainWindow::onStepOnce() {
@@ -331,34 +278,46 @@ void MainWindow::onStepOnce() {
 }
 
 void MainWindow::onRandomSeed() {
-    seedSpin_->setValue(static_cast<int>(QRandomGenerator::global()->bounded(1000000)));
+    ui_->seedSpin->setValue(static_cast<int>(QRandomGenerator::global()->bounded(1000000)));
     onResetEpisode();
 }
 
-void MainWindow::onResetEpisode() {
+void MainWindow::resetEpisodeUiState() {
     timer_->stop();
     running_ = false;
-    startStopButton_->setText("Start");
-    stepButton_->setEnabled(true);
+    ui_->startStopButton->setText("Start");
+    ui_->stepButton->setEnabled(true);
 
-    int seed = seedSpin_->value();
+    ui_->eventsTable->setRowCount(0);
+    ui_->priorityTable->setRowCount(0);
+    ui_->detectionsTable->setRowCount(0);
+    ui_->statsLabel->setText("No data yet.");
+    ui_->currentBandLabel->setText("Current band: -");
+    ui_->priorityScoreLabel->setText("Priority: -");
+    ui_->decisionValueLabel->setText("-");
+    ui_->reasonValueLabel->setText("Reason: -");
+    ui_->signalLabel->setText("Signal: -");
+}
+
+void MainWindow::onResetEpisode() {
+    resetEpisodeUiState();
+
+    int seed = ui_->seedSpin->value();
     bridge_->reset(seed);
     prevT_ = 0;
+    episodeCount_++;
 
     SpectrumGeometry geom = bridge_->spectrumGeometry();
-    spectrogram_->setSpectrumGeometry(geom.numBands, geom.bandStartFreqHz, geom.bandBandwidthHz);
+    ui_->spectrogram->setSpectrumGeometry(geom.numBands, geom.bandStartFreqHz, geom.bandBandwidthHz);
 
     TruthMatrix tm = bridge_->truthMatrix();
-    spectrogram_->clearDwells();
-    spectrogram_->setTruth(tm.numBands, tm.episodeLength, tm.data);
+    ui_->spectrogram->clearDwells();
+    ui_->spectrogram->setTruth(tm.numBands, tm.episodeLength, tm.data);
 
-    QString scenarioLabel = bridge_->currentScenario().empty()
-        ? "random population" : QString::fromStdString(bridge_->currentScenario());
-    log_->appendPlainText(QString("--- Episode reset (seed=%1, scenario=%2) ---").arg(seed).arg(scenarioLabel));
-    signalLabel_->setText("Signal: -");
-    modeLabel_->setText(bridge_->hasModel()
-        ? (bridge_->isHybrid() ? "Doctrine mode: -" : "Doctrine mode: n/a (non-hybrid model)")
-        : "Doctrine mode: n/a (no model loaded — stepping randomly)");
+    ui_->log->appendPlainText(QString("--- Episode reset (seed=%1, scenario=%2) ---")
+        .arg(seed)
+        .arg(bridge_->currentScenario().empty() ? "random population" : QString::fromStdString(bridge_->currentScenario())));
+
     updateMetricsLabel();
 }
 
@@ -371,34 +330,169 @@ void MainWindow::doStep() {
     StepResult r = bridge_->step();
     prevT_ = r.t;
 
-    spectrogram_->addDwell(r.band, startT, r.t, r.freqLoHz, r.freqHiHz, r.dwellOutcome);
-    spectrogram_->setCursorT(r.t);
+    ui_->spectrogram->addDwell(r.band, startT, r.t, r.freqLoHz, r.freqHiHz, r.dwellOutcome);
+    ui_->spectrogram->setCursorT(r.t);
+
+    appendEventRow(r);
+    updateDecisionStrip(r);
+    updateMetricsLabel();
+    refreshPriorityTable();
+    refreshDetectionsTable();
+    updateStatsTab();
+
+    ui_->signalLabel->setText(QString("Signal (band %1): %2 dBm").arg(r.band).arg(r.measuredPowerDbm, 0, 'f', 1));
 
     QString modeStr = r.doctrineMode.empty() ? "-" : QString::fromStdString(r.doctrineMode);
-    log_->appendPlainText(QString("t=%1/%2  band=%3  dwell=%4  reward=%5  hit=%6  false_alarm=%7  signal=%8dBm  mode=%9")
+    ui_->log->appendPlainText(QString("t=%1/%2  band=%3  dwell=%4  reward=%5  hit=%6  false_alarm=%7  signal=%8dBm  mode=%9")
         .arg(r.t).arg(r.episodeLength).arg(r.band).arg(r.dwellSlots)
         .arg(r.reward, 0, 'f', 2).arg(r.hit).arg(r.falseAlarm)
         .arg(r.measuredPowerDbm, 0, 'f', 1).arg(modeStr));
 
-    signalLabel_->setText(QString("Signal (band %1): %2 dBm").arg(r.band).arg(r.measuredPowerDbm, 0, 'f', 1));
-    if (!r.doctrineMode.empty()) {
-        modeLabel_->setText(QString("Doctrine mode: %1").arg(modeStr));
-    }
-    updateMetricsLabel();
-
     if (r.truncated) {
         timer_->stop();
         running_ = false;
-        startStopButton_->setText("Start");
-        stepButton_->setEnabled(true);
-        log_->appendPlainText("--- Episode ended ---");
+        ui_->startStopButton->setText("Start");
+        ui_->stepButton->setEnabled(true);
+        ui_->log->appendPlainText("--- Episode ended ---");
+    }
+}
+
+void MainWindow::appendEventRow(const StepResult& r) {
+    int row = ui_->eventsTable->rowCount();
+    ui_->eventsTable->insertRow(row);
+    ui_->eventsTable->setItem(row, 0, new QTableWidgetItem(QString::number(r.t)));
+    ui_->eventsTable->setItem(row, 1, new QTableWidgetItem(QString::number(r.band)));
+    ui_->eventsTable->setItem(row, 2, new QTableWidgetItem(formatFreq((r.freqLoHz + r.freqHiHz) / 2.0)));
+    ui_->eventsTable->setItem(row, 3, new QTableWidgetItem(QString::number(r.dwellSlots)));
+    ui_->eventsTable->setItem(row, 4, new QTableWidgetItem(QString::number(r.measuredPowerDbm, 'f', 1) + " dBm"));
+
+    auto* resultItem = new QTableWidgetItem(outcomeLabel(r.dwellOutcome));
+    resultItem->setForeground(outcomeQColor(r.dwellOutcome));
+    ui_->eventsTable->setItem(row, 5, resultItem);
+
+    ui_->eventsTable->setItem(row, 6, new QTableWidgetItem(QString::number(r.reward, 'f', 2)));
+    ui_->eventsTable->scrollToBottom();
+
+    // Cap displayed history so the table doesn't grow unbounded over a
+    // long episode -- matches the old plain-text log's 500-block cap.
+    while (ui_->eventsTable->rowCount() > 500) {
+        ui_->eventsTable->removeRow(0);
+    }
+}
+
+void MainWindow::updateDecisionStrip(const StepResult& r) {
+    ui_->currentBandLabel->setText(QString("Current band: %1").arg(r.band));
+    if (!r.decision.empty()) {
+        ui_->priorityScoreLabel->setText(QString("Priority: %1").arg(r.priorityScore, 0, 'f', 3));
+        ui_->decisionValueLabel->setText(QString::fromStdString(r.decision));
+        ui_->reasonValueLabel->setText(QString("Reason: %1").arg(QString::fromStdString(r.decisionReason)));
+    } else {
+        // Traditional modes produce no DecisionExplanation.
+        ui_->priorityScoreLabel->setText("Priority: n/a (traditional)");
+        ui_->decisionValueLabel->setText("-");
+        ui_->reasonValueLabel->setText("Reason: n/a (traditional)");
     }
 }
 
 void MainWindow::updateMetricsLabel() {
     EpisodeMetrics m = bridge_->currentMetrics();
-    metricsLabel_->setText(
+    ui_->metricsLabel->setText(
         QString("Pd: %1   Pfa: %2   Intercept rate: %3   Avg reward: %4")
             .arg(m.pd, 0, 'f', 3).arg(m.pfa, 0, 'f', 3)
             .arg(m.avgInterceptRate, 0, 'f', 3).arg(m.avgReward, 0, 'f', 3));
+}
+
+void MainWindow::refreshPriorityTable() {
+    auto priorities = bridge_->bandPriorities();
+    ui_->priorityTable->setRowCount(static_cast<int>(priorities.size()));
+    for (int i = 0; i < static_cast<int>(priorities.size()); ++i) {
+        const auto& p = priorities[i];
+        ui_->priorityTable->setItem(i, 0, new QTableWidgetItem(QString::number(p.band)));
+        ui_->priorityTable->setItem(i, 1, new QTableWidgetItem(formatFreq(p.freqHz)));
+        ui_->priorityTable->setItem(i, 2, new QTableWidgetItem(QString::number(p.priorityScore, 'f', 3)));
+        ui_->priorityTable->setItem(i, 3, new QTableWidgetItem(QString::number(p.visitCount)));
+        ui_->priorityTable->setItem(i, 4, new QTableWidgetItem(QString::number(p.hitCount)));
+        ui_->priorityTable->setItem(i, 5, new QTableWidgetItem(QString::number(p.confidence, 'f', 2)));
+        ui_->priorityTable->setItem(i, 6, new QTableWidgetItem(QString::number(p.threatLevel)));
+    }
+    ui_->priorityTable->sortItems(2, Qt::DescendingOrder);
+}
+
+void MainWindow::refreshDetectionsTable() {
+    auto hits = bridge_->recentHits(50);
+    ui_->detectionsTable->setRowCount(static_cast<int>(hits.size()));
+    for (int i = 0; i < static_cast<int>(hits.size()); ++i) {
+        const auto& d = hits[i];
+        int row = static_cast<int>(hits.size()) - 1 - i;  // most recent first
+        ui_->detectionsTable->setItem(row, 0, new QTableWidgetItem(QString::number(d.t)));
+        ui_->detectionsTable->setItem(row, 1, new QTableWidgetItem(QString::number(d.band)));
+        ui_->detectionsTable->setItem(row, 2, new QTableWidgetItem(formatFreq(d.freqHz)));
+        ui_->detectionsTable->setItem(row, 3, new QTableWidgetItem(QString::number(d.meanPowerDbm, 'f', 1) + " dBm"));
+    }
+}
+
+void MainWindow::updateStatsTab() {
+    EpisodeMetrics m = bridge_->currentMetrics();
+    QString modeText = ui_->modeCombo->currentText();
+    QString text = QString(
+        "Episode #%1\n"
+        "Scheduler mode: %2\n\n"
+        "Probability of Detection (Pd): %3\n"
+        "Probability of False Alarm (Pfa): %4\n"
+        "Average Intercept Rate: %5\n"
+        "Percent Correct: %6\n"
+        "Average Reward: %7\n\n"
+        "Events recorded: %8"
+    ).arg(episodeCount_).arg(modeText)
+     .arg(m.pd, 0, 'f', 3).arg(m.pfa, 0, 'f', 3)
+     .arg(m.avgInterceptRate, 0, 'f', 3).arg(m.percentCorrect, 0, 'f', 3)
+     .arg(m.avgReward, 0, 'f', 3).arg(ui_->eventsTable->rowCount());
+    ui_->statsLabel->setText(text);
+}
+
+// ---------------------------------------------------------------------
+// Comparison page
+// ---------------------------------------------------------------------
+
+void MainWindow::onRunComparison() {
+    std::vector<std::string> selectedModelIds;
+    for (int i = 0; i < ui_->modelsListWidget->count(); ++i) {
+        QListWidgetItem* item = ui_->modelsListWidget->item(i);
+        if (item->checkState() == Qt::Checked) {
+            selectedModelIds.push_back(item->data(Qt::UserRole).toString().toStdString());
+        }
+    }
+
+    ui_->comparisonStatusLabel->setText("Running comparison...");
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QApplication::processEvents();
+
+    std::vector<ComparisonRow> rows;
+    try {
+        rows = bridge_->runComparison(
+            ui_->comparisonSeedSpin->value(),
+            selectedModelIds,
+            ui_->includeSequentialCheck->isChecked(),
+            ui_->includeBalancedRandomCheck->isChecked(),
+            ui_->includeHeuristicCheck->isChecked());
+    } catch (const std::exception& e) {
+        QApplication::restoreOverrideCursor();
+        ui_->comparisonStatusLabel->setText("Failed.");
+        QMessageBox::critical(this, "Comparison failed", QString::fromStdString(e.what()));
+        return;
+    }
+    QApplication::restoreOverrideCursor();
+
+    ui_->comparisonTable->setRowCount(static_cast<int>(rows.size()));
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const auto& r = rows[i];
+        ui_->comparisonTable->setItem(i, 0, new QTableWidgetItem(QString::fromStdString(r.label)));
+        ui_->comparisonTable->setItem(i, 1, new QTableWidgetItem(QString::number(r.pd, 'f', 3)));
+        ui_->comparisonTable->setItem(i, 2, new QTableWidgetItem(QString::number(r.pfa, 'f', 3)));
+        ui_->comparisonTable->setItem(i, 3, new QTableWidgetItem(QString::number(r.avgInterceptRate, 'f', 3)));
+        ui_->comparisonTable->setItem(i, 4, new QTableWidgetItem(QString::number(r.avgReward, 'f', 2)));
+        ui_->comparisonTable->setItem(i, 5, new QTableWidgetItem(QString::number(r.percentCorrect, 'f', 3)));
+    }
+
+    ui_->comparisonStatusLabel->setText(QString("Done — %1 row(s).").arg(rows.size()));
 }

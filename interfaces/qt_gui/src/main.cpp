@@ -21,10 +21,6 @@
 namespace py = pybind11;
 
 int main(int argc, char** argv) {
-    // Lives for the whole process -- PythonBridge no longer owns/embeds
-    // its own interpreter, so models can be swapped at runtime via the
-    // GUI's Load Model button without repeatedly tearing down and
-    // reinitializing Python/torch/CUDA state.
     py::scoped_interpreter guard{};
 
     QApplication app(argc, argv);
@@ -34,8 +30,6 @@ int main(int argc, char** argv) {
 
     MainWindow window(ALTERRA_REPO_ROOT, configPath);
 
-    // Optional convenience: preload a model at startup.
-    //   ./alterra_gui <config> <model_path> <algo_class>
     if (argc > 3) {
         window.preloadModel(argv[2], argv[3]);
     }

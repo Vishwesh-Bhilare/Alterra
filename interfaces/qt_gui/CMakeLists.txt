@@ -20,6 +20,7 @@ add_executable(alterra_gui
     src/MainWindow.ui
     src/PythonBridge.cpp
     src/SpectrogramWidget.cpp
+    src/CustomMixDialog.cpp
 )
 
 target_include_directories(alterra_gui PRIVATE src)

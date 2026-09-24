@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-alterra = "interfaces.cli.main:cli"
+alterra = "interfaces.cli.cli_main:cli"
 
 [tool.setuptools]
 packages = ["simulation", "simulation.emitters", "simulation.environment",
