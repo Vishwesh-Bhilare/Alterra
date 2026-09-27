@@ -23,6 +23,7 @@
 #include <QCoreApplication>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QLineEdit>
 #include <QFormLayout>
 #include <QListWidgetItem>
@@ -480,45 +481,45 @@ void MainWindow::onResetEpisode() {
     }
     try {
         bridge_->reset(seed);
-    } catch (const PythonBridgeError& e) {
+        prevT_ = 0;
+
+        bandStartFreqHz_ = bridge_->bandStartFreqHz();
+        bandBandwidthHz_ = bridge_->bandBandwidthHz();
+        ui->spectrogram->setSpectrumGeometry(bridge_->numBands(), bandStartFreqHz_, bandBandwidthHz_);
+
+        TruthMatrix tm = bridge_->truthMatrix();
+        ui->spectrogram->clearDwells();
+        ui->spectrogram->setTruth(tm.numBands, tm.episodeLength, tm.data);
+
+        ui->eventsTable->setRowCount(0);
+        ui->priorityTable->setRowCount(0);
+        ui->detectionsTable->setRowCount(0);
+        ui->currentBandLabel->setText("Current band: -");
+        ui->priorityScoreLabel->setText("Priority: -");
+        ui->decisionValueLabel->setText("-");
+        ui->decisionValueLabel->setStyleSheet("");
+        ui->reasonValueLabel->setText("Reason: -");
+        ui->statsLabel->setText("No data yet.");
+        exploreCount_ = 0;
+        exploitCount_ = 0;
+        totalHits_ = 0;
+        totalMisses_ = 0;
+        totalFalseAlarms_ = 0;
+        totalCorrectRejects_ = 0;
+
+        refreshPriorityTable();
+
+        ui->log->appendPlainText(QString("--- Episode reset (seed=%1, mode=%2) ---")
+            .arg(seed).arg(ui->modeCombo->currentText()));
+        for (const std::string& line : bridge_->emitterRoster()) {
+            ui->log->appendPlainText("    " + QString::fromStdString(line));
+        }
+        ui->signalLabel->setText("Signal: -");
+        updateMetricsLabel();
+    } catch (const std::exception& e) {
         ui->log->appendPlainText(QString("--- Reset error: %1 ---").arg(e.what()));
-        return;
+        QMessageBox::critical(this, "Reset Error", QString("Failed to reset episode:\n%1").arg(e.what()));
     }
-    prevT_ = 0;
-
-    bandStartFreqHz_ = bridge_->bandStartFreqHz();
-    bandBandwidthHz_ = bridge_->bandBandwidthHz();
-    ui->spectrogram->setSpectrumGeometry(bridge_->numBands(), bandStartFreqHz_, bandBandwidthHz_);
-
-    TruthMatrix tm = bridge_->truthMatrix();
-    ui->spectrogram->clearDwells();
-    ui->spectrogram->setTruth(tm.numBands, tm.episodeLength, tm.data);
-
-    ui->eventsTable->setRowCount(0);
-    ui->priorityTable->setRowCount(0);
-    ui->detectionsTable->setRowCount(0);
-    ui->currentBandLabel->setText("Current band: -");
-    ui->priorityScoreLabel->setText("Priority: -");
-    ui->decisionValueLabel->setText("-");
-    ui->decisionValueLabel->setStyleSheet("");
-    ui->reasonValueLabel->setText("Reason: -");
-    ui->statsLabel->setText("No data yet.");
-    exploreCount_ = 0;
-    exploitCount_ = 0;
-    totalHits_ = 0;
-    totalMisses_ = 0;
-    totalFalseAlarms_ = 0;
-    totalCorrectRejects_ = 0;
-
-    refreshPriorityTable();
-
-    ui->log->appendPlainText(QString("--- Episode reset (seed=%1, mode=%2) ---")
-        .arg(seed).arg(ui->modeCombo->currentText()));
-    for (const std::string& line : bridge_->emitterRoster()) {
-        ui->log->appendPlainText("    " + QString::fromStdString(line));
-    }
-    ui->signalLabel->setText("Signal: -");
-    updateMetricsLabel();
 }
 
 void MainWindow::onTick() {
@@ -532,7 +533,18 @@ QString MainWindow::freqLabelForBand(int band) const {
 
 void MainWindow::doStep() {
     int startT = prevT_;
-    StepResult r = bridge_->step();
+    StepResult r;
+    try {
+        r = bridge_->step();
+    } catch (const std::exception& e) {
+        timer_->stop();
+        running_ = false;
+        ui->startStopButton->setText("Start");
+        ui->stepButton->setEnabled(true);
+        ui->log->appendPlainText(QString("--- Step error: %1 ---").arg(e.what()));
+        QMessageBox::critical(this, "Simulation Step Error", QString("Simulation step failed:\n%1").arg(e.what()));
+        return;
+    }
     prevT_ = r.t;
 
     auto outcome = classifyOutcome(r.classification);
@@ -581,7 +593,11 @@ void MainWindow::updateDecisionPanel(const StepResult& r) {
     }
 
     ui->priorityScoreLabel->setText(QString("Priority: %1").arg(r.decision.priorityScore, 0, 'f', 3));
-    ui->decisionValueLabel->setText(QString::fromStdString(r.decision.exploreExploit));
+    QString decisionText = QString::fromStdString(r.decision.exploreExploit);
+    if (!r.doctrineMode.empty() && r.doctrineMode != r.decision.exploreExploit) {
+        decisionText += QString(" [%1]").arg(QString::fromStdString(r.doctrineMode));
+    }
+    ui->decisionValueLabel->setText(decisionText);
     QString color = (r.decision.exploreExploit == "EXPLORE") ? "#3ca8ff" : "#3cdc64";
     ui->decisionValueLabel->setStyleSheet(QString("color: %1;").arg(color));
     ui->reasonValueLabel->setText(QString("Reason: %1").arg(QString::fromStdString(r.decision.reason)));

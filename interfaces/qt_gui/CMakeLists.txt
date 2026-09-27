@@ -12,7 +12,11 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 # (per the earlier decision to use Qt Charts rather than hand-rolled
 # QPainter charts), so no further CMake changes are needed once that
 # tab's .cpp code actually starts using it.
-find_package(Qt6 REQUIRED COMPONENTS Charts)
+find_package(Qt6 COMPONENTS Charts QUIET)
+if(NOT TARGET Qt6::Charts)
+    find_package(Qt6Charts REQUIRED)
+endif()
+set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 REQUIRED)
 
 add_executable(alterra_gui

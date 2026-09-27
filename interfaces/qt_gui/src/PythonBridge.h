@@ -83,6 +83,7 @@ struct StepResult {
     FrequencyWindow freqWindow;
     ClassificationCounts classification;
     SchedulerDecision decision;
+    std::string doctrineMode;
 };
 
 struct EpisodeMetrics {

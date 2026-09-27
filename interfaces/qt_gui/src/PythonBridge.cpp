@@ -305,6 +305,13 @@ StepResult PythonBridge::step() {
         r.freqWindow = extractFrequencyWindow(dwellResult);
         r.classification = extractClassificationCounts(dwellResult);
         r.decision = extractDecisionFromInfo(info);
+        if (info.contains("doctrine_mode")) {
+            r.doctrineMode = info["doctrine_mode"].cast<std::string>();
+        } else if (info.contains("mode")) {
+            r.doctrineMode = info["mode"].cast<std::string>();
+        } else {
+            r.doctrineMode = r.decision.exploreExploit;
+        }
     } else {
         py::tuple stepped = driver_.attr("step")();
         py::object dwellResult = stepped[0];

@@ -268,6 +268,7 @@ class AlterraEnv(gym.Env):
             "retune_slots": dwell_result.retune_slots,
             "center_freq_hz": dwell_result.center_freq_hz,
             "decision": decision.explore_exploit,
+            "doctrine_mode": decision.explore_exploit,
             "decision_reason": decision.reason,
             "priority_score": decision.priority_score,
             "delta": delta,
