@@ -927,3 +927,63 @@ exists. Comparison tab also gained `includeSequentialCheck` /
 `includeBalancedRandomCheck` (both default-checked) so baselines can be
 toggled off entirely, e.g. to compare several RL checkpoints against each
 other with no traditional baseline in the table at all.
+
+---
+
+## Codebase audit — GUI/PythonBridge review (see docs/AUDIT.md)
+
+A full review pass across the GUI (`MainWindow`/`PythonBridge`/
+`CustomMixDialog`/`SpectrogramWidget`), all of `simulation/`, and
+`model/agents/` (registry, policy runner, comparison, doctrine,
+heuristic scheduler) turned up 4 confirmed bugs and 2 confirmed
+correctness regressions relative to the design intent recorded earlier
+in this document, plus 2 polish items and 5 README/documentation
+mismatches. Full detail, with exact before/after code for every item, is
+in `docs/AUDIT.md` — this entry is a pointer, not a duplicate.
+
+**P0 (crash / silently-broken)**:
+- `PythonBridge::step()`'s Traditional-mode branch calls
+  `dwellResult.attr("any_hit")()` / `.attr("any_false_alarm")()` with an
+  extra `()` — these are `@property` on `DwellResult`, so the call
+  raises `TypeError` the moment either Traditional scheduler mode steps.
+- `onResetEpisode()` and `doStep()` in `MainWindow.cpp` have no
+  try/catch around their `PythonBridge` calls, unlike every other call
+  site in that file — an exception there crashes the app instead of
+  showing a dialog.
+- `MainWindow::preloadModel()` (the `main.cpp` command-line model-preload
+  path) never actually calls `PythonBridge::loadModel()` — it only sets
+  the RL Model combo's index with signals blocked, so
+  `onRlModelComboChanged()` (the only place that calls `loadModel()`)
+  never fires. A model passed on the command line silently never loads;
+  Adaptive mode falls back to random actions with no error shown.
+
+**P1 (regressions)**:
+- `DwellOutcome::CorrectReject` is dead code in `PythonBridge::step()` —
+  every non-hit, non-false-alarm dwell now displays as "Miss," including
+  genuinely-empty correctly-rejected bands, even though
+  `DwellResult.classification_counts()` already distinguishes all four
+  outcomes correctly.
+- `PythonBridge::loadModel()` unconditionally calls `reset(0)`, silently
+  desyncing the Seed spinbox from the actual running episode whenever a
+  different RL model is selected from the dropdown.
+
+**P2/P3 (polish / docs)**: doctrine mode (EXPLORE/INVESTIGATE/TRACK/
+RELOCATE — the hybrid scheduler's actual differentiator) is only visible
+in the plain-text Log, not the structured Decision panel; the project
+README describes an action space, checkpoint path, GUI launch command,
+and several scripts/tests that don't match the real code — see
+`docs/AUDIT.md`'s P3 section for the specific claims and contradicting
+file/line evidence.
+
+**P4 (scope, not code)**: `tests/` still appears empty; the original
+three-way CAROTA/Double-DQN/PPO comparison plan is now, in the actual
+code, a four-way Traditional/Heuristic/Hybrid/plain-PPO one with no
+Double-DQN baseline anywhere — confirm this is an intentional scope
+change before it goes in a report; no full hybrid-model training run +
+`evaluate_hybrid.py` results are in hand yet.
+
+Suggested fix order (detail in `docs/AUDIT.md`): P0.1+P0.2+P1.1 together
+(same function), P0.3+P1.2 together (P0.3's fix depends on P1.2), P1.3
+any time, P2.1 once P0/P1 are solid, P2.2 any time, P3 as a documentation
+pass (decide fix-the-doc vs. build-the-missing-piece first), P4 last —
+training + a scope decision, not code.
