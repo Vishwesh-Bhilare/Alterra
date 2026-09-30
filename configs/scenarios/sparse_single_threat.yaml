@@ -1,0 +1,11 @@
+# Density (opposite of dense_congested): one high-value emitter, otherwise
+# empty spectrum -- a clean, near-uncontested intercept-time demo case.
+emitters:
+  - kind: fixed
+    id: lone_juliet
+    threat_level: 3
+    band: 75
+    duty_cycle: 0.4
+    mean_burst_slots: 60
+    power_dbm: 16.0
+    power_jitter_std_db: 1.5

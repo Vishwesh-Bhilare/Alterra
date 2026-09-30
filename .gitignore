@@ -1,0 +1,242 @@
+# ============================================================
+# Python
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+pip-wheel-metadata/
+MANIFEST
+*.manifest
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# ============================================================
+# Testing / type checking / linting
+# ============================================================
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.pytype/
+.hypothesis/
+
+# ============================================================
+# Jupyter
+# ============================================================
+
+.ipynb_checkpoints/
+
+# ============================================================
+# Logs / temporary files
+# ============================================================
+
+*.log
+logs/
+log/
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+*.orig
+*.rej
+*~
+
+# ============================================================
+# Simulation / generated data
+# ============================================================
+
+data/generated/
+simulation/output/
+simulation/outputs/
+simulation/data/
+simulation/generated/
+simulation/results/
+
+outputs/
+output/
+generated/
+results/
+
+# Generated numerical/data artifacts
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.hdf5
+*.parquet
+*.feather
+
+# ============================================================
+# RL training artifacts
+# ============================================================
+
+# TensorBoard / experiment logs
+tb_logs/
+**/tb_logs/
+runs/
+wandb/
+tensorboard/
+mlruns/
+
+# Evaluation outputs
+**/eval_logs/
+
+# PPO checkpoints
+model/agents/checkpoints/*
+!model/agents/checkpoints/best/
+model/agents/checkpoints/best/*
+!model/agents/checkpoints/best/best_model.zip
+!model/agents/checkpoints/demo_ppo.zip
+
+# ============================================================
+# Deinterleaving training checkpoints
+# ============================================================
+
+# Ignore intermediate training checkpoints
+model/deinterleaving/checkpoints/*
+
+# ============================================================
+# Qt / CMake build artifacts
+# ============================================================
+
+interfaces/qt_gui/build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+**/compile_commands.json
+**/*.cmake
+
+# Qt generated files
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+
+# ============================================================
+# IDEs
+# ============================================================
+
+.vscode/
+.idea/
+*.iml
+.history/
+
+# Python version managers
+.python-version
+
+# ============================================================
+# Vim / Emacs / editors
+# ============================================================
+
+Session.vim
+.netrwhist
+
+.#*
+*#
+
+# ============================================================
+# OS
+# ============================================================
+
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+.directory
+
+# ============================================================
+# Local configuration
+# ============================================================
+
+*.local
+*.override.yaml
+*.override.yml
+
+configs/*.local.yaml
+configs/*.local.yml
+configs/local/
+
+# ============================================================
+# Documentation builds / generated reports
+# ============================================================
+
+docs/_build/
+site/
+reports/
+artifacts/
+
+# ============================================================
+# Frontend
+# ============================================================
+
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.next/
+.nuxt/
+.svelte-kit/
+.vercel/
+.netlify/
+
+# ============================================================
+# Docker / local infrastructure
+# ============================================================
+
+.docker/
+docker-data/
+
+# ============================================================
+# Databases
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================================
+# Process / runtime files
+# ============================================================
+
+*.pid
+*.pid.lock
+data/
+.cache/

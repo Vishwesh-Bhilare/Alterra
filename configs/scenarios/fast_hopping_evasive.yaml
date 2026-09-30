@@ -1,0 +1,13 @@
+# Evasion: a short-hop-dwell frequency-agile emitter -- tests whether
+# EXPLORE/EXPLOIT actually chases a moving target rather than camping on
+# wherever it was last seen.
+emitters:
+  - kind: agile
+    id: evasive_kilo
+    threat_level: 3
+    hop_bands: [15, 40, 65, 90, 110]
+    hop_dwell_slots: 4
+    burst_duty_cycle: 0.8
+    burst_mean_slots: 15
+    power_dbm: 13.0
+    power_jitter_std_db: 2.0

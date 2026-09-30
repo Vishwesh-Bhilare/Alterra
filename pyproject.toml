@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alterra"
+version = "0.1.0"
+description = "Smart Scan Strategy for Electronic Warfare — simulation + RL scheduler"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "click>=8.1",
+]
+
+[project.scripts]
+alterra = "interfaces.cli.main:cli"
+
+[tool.setuptools]
+packages = ["simulation", "simulation.emitters", "simulation.environment",
+            "simulation.metrics", "simulation.utils", "simulation.viz",
+            "model", "model.perception", "model.deinterleaving", "model.agents",
+            "interfaces", "interfaces.cli"]

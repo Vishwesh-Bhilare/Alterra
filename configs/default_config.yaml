@@ -1,0 +1,121 @@
+# Alterra Configuration
+# Electronic Warfare receiver scheduling simulation
+
+rng_seed: 42
+
+# Spectrum definition
+spectrum:
+  num_bands: 128                    # 128 bands covering ~1-10 GHz range
+  band_bandwidth_hz: 70e6           # 70 MHz per band (binning resolution)
+  band_start_freq_hz: 1.0e9         # Start at 1 GHz
+
+# Physical receiver model -- decoupled from the spectrum's band binning above.
+receiver:
+  instantaneous_bandwidth_hz: 70e6   # B_I - actual RF front-end bandwidth per dwell
+  retune_time_s: 0.001                # T_r - settling time paid when switching bands
+
+# Timing model
+timing:
+  slot_duration_s: 0.01             # 10 ms per slot
+  episode_length_slots: 2000        # 20 seconds per episode
+
+# Emitter population and class distributions
+emitters:
+  population:
+    total_count_range: {min: 8, max: 15}   # 8-15 emitters per episode
+    class_weights:
+      fixed: 0.5                    # 50% fixed-frequency emitters
+      agile: 0.35                   # 35% frequency-hopping
+      periodic_scan: 0.15           # 15% periodic-scan emitters
+    threat_level:
+      levels: [1, 2, 3]             # Low, Medium, High priority
+      weights: [0.4, 0.4, 0.2]      # 40% low, 40% med, 20% high
+
+  # Fixed-frequency emitter parameters
+  fixed:
+    band_index_range: {min: 0, max: 127}   # Can be on any band
+    duty_cycle_range: {min: 0.1, max: 0.7}
+    mean_burst_slots_range: {min: 50, max: 200}
+    power_dbm_range: {min: 0, max: 30}
+    power_jitter_std_db: 2.0
+
+  # Frequency-hopping (agile) emitter parameters
+  agile:
+    hop_dwell_slots_range: {min: 20, max: 100}   # Time on each frequency
+    num_hop_bands_range: {min: 3, max: 10}       # Number of bands to hop among
+    burst_duty_cycle_range: {min: 0.2, max: 0.8}
+    burst_mean_slots_range: {min: 40, max: 150}
+    power_dbm_range: {min: 5, max: 35}
+    power_jitter_std_db: 3.0
+
+  # Periodic-scan emitter parameters
+  periodic_scan:
+    dwell_slots_range: {min: 30, max: 80}        # Time per band in sweep
+    sweep_width_bands_range: {min: 4, max: 16}   # Number of bands to sweep
+    duty_cycle_range: {min: 0.3, max: 0.9}
+    burst_mean_slots_range: {min: 60, max: 180}
+    power_dbm_range: {min: 10, max: 40}
+    power_jitter_std_db: 2.5
+
+# Sensor (receiver) model
+sensor:
+  noise_floor_dbm_range: {min: -95.0, max: -85.0}
+  pd_snr50_db: 8.0        # SNR (dB) at which Pd = 0.5
+  pd_slope_db: 3.0        # Logistic slope of Pd(SNR) curve
+  pfa_rate: 0.02          # Per-band per-slot false alarm probability
+  noise_reading_std_db: 1.5
+  measured_power_norm_min: -100.0
+  measured_power_norm_max: 40.0
+  detection_threshold_db_above_noise: 6.0   # display/GUI threshold line: noise_floor + this
+
+# Environment and RL reward structure
+environment:
+  action_mode: "absolute"                 # "relative" ([-1, 0, +1]) or "absolute" (instantaneous 1-10 GHz hopping)
+  relative_step_sizes: [-1, 0, 1]         # Down, Stay, Up
+  dwell_options_slots: [3, 5, 8, 12]
+  history_length: 16
+  lstm_hidden_dim: 64
+  reward:
+    hit_reward_base: 10.0
+    threat_weight_levels: [1, 2, 3]
+    threat_weight_values: [1.0, 2.0, 4.0]   # Threat level multipliers
+    tracking_reward: 6.0                    # Bonus for staying on an active emitter
+    signal_lost_penalty: -0.8               # Penalty for dwelling on band after signal ended
+    empty_stay_penalty: -0.8                # Penalty for staying on an empty band (encourages scanning)
+    boundary_penalty: -2.0                  # Penalty for trying to step beyond spectrum boundary
+    idle_cost: -0.1                         # Penalty for dwelling with no signal
+    false_alarm_penalty: -0.5
+    novelty_bonus: 1.0
+    hit_confirm_floor: 0.1                  # min fraction of hit_reward_base paid for
+                                             # re-confirming an already-tracked, fresh track
+    staleness_penalty_coeff: 0.02           # How much to penalize old observations
+    staleness_norm_slots: 200               # Normalization horizon for staleness
+
+# Non-adaptive baseline receiver, for comparison against the RL scheduler.
+# See simulation/environment/traditional_scanner.py -- both modes are
+# drawn from Apfeld, Charlish & Koch, "An Adaptive Receiver Search
+# Strategy for Electronic Support" (Fraunhofer FKIE, IEEE 2016).
+comparison:
+  traditional_scan:
+    mode: sequential                        # "sequential" | "balanced_random"
+    dwell_slots: 8                          # fixed per-band dwell time (not tied to the RL
+                                             # agent's dwell_options_slots -- a real legacy
+                                             # receiver's dwell time is a hardware property)
+
+scenario:
+  manual_scenario_path: null   # set via --scenario CLI flag; null = default random population
+
+dataset:
+  tsrd_dir: null               # Optional path to Turing Synthetic Radar Dataset (e.g. /path/to/turing_synthetic_radar_data)
+
+pulse:
+  pri_s_range: {min: 0.0005, max: 0.01}
+  pw_s_range: {min: 0.00001, max: 0.0005}
+  pri_jitter_std_s: 0.00002
+  doa_deg_range: {min: 0.0, max: 360.0}
+
+# Scheduler explainability / GUI history buffers (Module B) -- no effect
+# on observation, action, or reward; purely for GUI/history display.
+scheduler_insight:
+  power_history_len: 20    # per-band rolling signal-strength history length
+  event_history_len: 200   # global recent-decisions/detections history length

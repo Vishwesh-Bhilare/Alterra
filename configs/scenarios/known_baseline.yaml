@@ -1,0 +1,31 @@
+# Sanity-check default: three fixed emitters, well-separated bands,
+# distinct threat levels, ordinary duty cycle -- easy for a human to
+# eyeball whether scheduler behavior looks sane before trusting the
+# fancier scenarios.
+emitters:
+  - kind: fixed
+    id: baseline_low
+    threat_level: 1
+    band: 20
+    duty_cycle: 0.5
+    mean_burst_slots: 40
+    power_dbm: 8.0
+    power_jitter_std_db: 1.0
+
+  - kind: fixed
+    id: baseline_medium
+    threat_level: 2
+    band: 60
+    duty_cycle: 0.5
+    mean_burst_slots: 40
+    power_dbm: 12.0
+    power_jitter_std_db: 1.0
+
+  - kind: fixed
+    id: baseline_high
+    threat_level: 3
+    band: 100
+    duty_cycle: 0.5
+    mean_burst_slots: 40
+    power_dbm: 16.0
+    power_jitter_std_db: 1.0
